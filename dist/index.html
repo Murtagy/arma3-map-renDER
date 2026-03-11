@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arma 3 Map Viewer</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { background: #1a1a2e; color: #eee; font-family: monospace; overflow: hidden; }
+      canvas { display: block; }
+      #ui {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        z-index: 100;
+        background: rgba(0,0,0,0.8);
+        padding: 12px;
+        border-radius: 6px;
+        font-size: 13px;
+        max-width: 400px;
+      }
+      #ui h1 { font-size: 16px; margin-bottom: 8px; color: #7fdbca; }
+      #ui label { display: block; margin: 6px 0 2px; color: #aaa; }
+      #ui input[type="text"] {
+        width: 100%;
+        padding: 4px 8px;
+        background: #222;
+        border: 1px solid #444;
+        color: #eee;
+        border-radius: 3px;
+        font-family: monospace;
+      }
+      #ui button {
+        margin: 4px 4px 4px 0;
+        padding: 4px 12px;
+        background: #3a506b;
+        color: #eee;
+        border: none;
+        border-radius: 3px;
+        cursor: pointer;
+        font-family: monospace;
+      }
+      #ui button:hover { background: #5a7a9b; }
+      #status { margin-top: 8px; color: #888; font-size: 12px; white-space: pre-wrap; }
+      #hud {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        z-index: 100;
+        background: rgba(0,0,0,0.6);
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        color: #7fdbca;
+      }
+      #controls-help {
+        position: absolute;
+        bottom: 10px;
+        right: 10px;
+        z-index: 100;
+        background: rgba(0,0,0,0.6);
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-size: 11px;
+        color: #888;
+      }
+      #minimap {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 100;
+        border: 2px solid rgba(255,255,255,0.5);
+        border-radius: 4px;
+        background: #1a2a1a;
+        display: none;
+      }
+      #plan-panel {
+        position: absolute;
+        top: 10px;
+        left: 420px;
+        z-index: 100;
+        background: rgba(0,0,0,0.85);
+        padding: 12px;
+        border-radius: 6px;
+        font-size: 13px;
+        width: 280px;
+        display: none;
+        border: 1px solid rgba(255,80,80,0.4);
+      }
+      #plan-panel h2 { font-size: 14px; margin-bottom: 8px; color: #ff6666; }
+      #plan-panel .plan-input-row {
+        display: none;
+        gap: 4px;
+        margin-bottom: 8px;
+      }
+      #plan-panel .plan-input-row input {
+        flex: 1;
+        padding: 4px 8px;
+        background: #222;
+        border: 1px solid #444;
+        color: #eee;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 12px;
+      }
+      #plan-panel .plan-input-row select {
+        width: 40px;
+        padding: 4px;
+        background: #222;
+        border: 1px solid #444;
+        color: #eee;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      #plan-panel .plan-status {
+        font-size: 11px;
+        color: #ff9999;
+        margin-bottom: 6px;
+      }
+      #plan-mark-list {
+        max-height: 300px;
+        overflow-y: auto;
+        font-size: 12px;
+      }
+      #plan-mark-list .mark-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 4px 6px;
+        margin-bottom: 3px;
+        background: rgba(255,255,255,0.05);
+        border-radius: 3px;
+        border-left: 3px solid #ff4444;
+      }
+      #plan-mark-list .mark-item .mark-label {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #ddd;
+      }
+      #plan-mark-list .mark-item button {
+        padding: 2px 6px;
+        margin-left: 3px;
+        background: #444;
+        color: #ccc;
+        border: none;
+        border-radius: 2px;
+        cursor: pointer;
+        font-family: monospace;
+        font-size: 11px;
+      }
+      #plan-mark-list .mark-item button:hover { background: #666; }
+      #plan-mark-list .mark-item button.btn-del:hover { background: #a33; }
+      #plan-toggle {
+        position: absolute;
+        top: 10px;
+        left: 370px;
+        z-index: 101;
+        padding: 6px 10px;
+        background: #3a506b;
+        color: #eee;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-family: monospace;
+        font-size: 12px;
+      }
+      #plan-toggle:hover { background: #5a7a9b; }
+      #plan-toggle.active { background: #a33; }
+    </style>
+    <script type="module" crossorigin src="/assets/index-Bbv2cSHy.js"></script>
+  </head>
+  <body>
+    <div id="ui">
+      <h1>Arma 3 Map Viewer</h1>
+      <label>Maps folder:</label>
+      <div style="display:flex; gap:4px;">
+        <input type="text" id="maps-folder" placeholder="/path/to/Arma 3 maps/" style="flex:1;" />
+        <button id="btn-scan">Scan</button>
+      </div>
+      <label>Map:</label>
+      <select id="map-select" disabled style="width:100%; padding:4px 8px; background:#222; border:1px solid #444; color:#eee; border-radius:3px; font-family:monospace; font-size:12px;">
+        <option value="">-- scan a folder first --</option>
+      </select>
+      <div style="margin-top:6px;">
+        <button id="btn-load-map" disabled>Load Map</button>
+      </div>
+      <details style="margin-top:6px;">
+        <summary style="color:#666; font-size:11px; cursor:pointer;">Manual path</summary>
+        <input type="text" id="file-path" placeholder="/path/to/map.pbo or .wrp" style="margin-top:4px;" />
+        <div>
+          <button id="btn-load-pbo">Load PBO</button>
+          <button id="btn-load-wrp">Load WRP</button>
+        </div>
+      </details>
+      <div id="status">Ready. Set maps folder and scan.</div>
+    </div>
+    <button id="plan-toggle" title="Toggle Plan Mode (P)">Plan</button>
+    <div id="plan-panel">
+      <h2>Commander Plan</h2>
+      <div class="plan-status" id="plan-status">Double-click terrain to place a mark</div>
+      <div style="display:flex; gap:4px; margin-bottom:6px;">
+        <select id="mark-color" style="width:40px; padding:4px; background:#222; border:1px solid #444; color:#eee; border-radius:3px; font-family:monospace; font-size:12px; cursor:pointer;">
+          <option value="R">R</option>
+          <option value="G" selected>G</option>
+          <option value="B">B</option>
+        </select>
+        <select id="line-type" title="Line type" style="flex:1; padding:4px; background:#222; border:1px solid #444; color:#eee; border-radius:3px; font-family:monospace; font-size:12px; cursor:pointer;">
+          <option value="ground">Ground line</option>
+          <option value="straight">Straight line</option>
+        </select>
+      </div>
+      <div class="plan-input-row">
+        <input type="text" id="mark-text" placeholder="Mark label (e.g. Alpha)" />
+      </div>
+      <div id="plan-mark-list"></div>
+    </div>
+    <div id="hud"></div>
+    <canvas id="minimap" width="250" height="250"></canvas>
+    <div id="controls-help">
+      WASD - Move | QE - Up/Down | Mouse - Look | Shift - Fast | Scroll - Speed | P - Plan Mode
+    </div>
+  </body>
+</html>
