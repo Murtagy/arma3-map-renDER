@@ -127,6 +127,6 @@ export class FlyCamera {
   /** Get current position info for HUD */
   getInfo(): string {
     const p = this.camera.position;
-    return `Pos: ${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)} | Speed: ${this.moveSpeed.toFixed(0)} m/s`;
+    return `Позиция: ${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)} | Скорость: ${this.moveSpeed.toFixed(0)} м/с`;
   }
 }

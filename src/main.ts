@@ -86,11 +86,11 @@ function updatePlanUI() {
     label.className = "mark-label";
     const pos = mark.worldPos;
     label.textContent = `${mark.text} (${pos.x.toFixed(0)}, ${pos.z.toFixed(0)})`;
-    label.title = `${mark.text} at ${pos.x.toFixed(0)}, ${pos.y.toFixed(0)}, ${pos.z.toFixed(0)}`;
+    label.title = `${mark.text} в ${pos.x.toFixed(0)}, ${pos.y.toFixed(0)}, ${pos.z.toFixed(0)}`;
     item.appendChild(label);
 
     const moveBtn = document.createElement("button");
-    moveBtn.textContent = "Move";
+    moveBtn.textContent = "Перем.";
     moveBtn.addEventListener("click", () => {
       planMode.startMove(mark.id);
       updatePlanStatus();
@@ -99,7 +99,7 @@ function updatePlanUI() {
 
     const delBtn = document.createElement("button");
     delBtn.className = "btn-del";
-    delBtn.textContent = "Del";
+    delBtn.textContent = "Удал.";
     delBtn.addEventListener("click", () => {
       planMode.removeMark(mark.id);
     });
@@ -118,14 +118,14 @@ function updatePlanUI() {
     const s = line.start;
     const e = line.end;
     const dist = Math.sqrt((e.x - s.x) ** 2 + (e.z - s.z) ** 2);
-    const typeLabel = line.lineType === "straight" ? "Straight" : "Ground";
+    const typeLabel = line.lineType === "straight" ? "Прямая" : "По земле";
     label.textContent = `${typeLabel} (${dist.toFixed(0)}m)`;
     label.title = `${s.x.toFixed(0)},${s.z.toFixed(0)} -> ${e.x.toFixed(0)},${e.z.toFixed(0)}`;
     item.appendChild(label);
 
     const delBtn = document.createElement("button");
     delBtn.className = "btn-del";
-    delBtn.textContent = "Del";
+    delBtn.textContent = "Удал.";
     delBtn.addEventListener("click", () => {
       planMode.removeLine(line.id);
     });
@@ -139,15 +139,15 @@ function updatePlanUI() {
 
 function updatePlanStatus() {
   if (planMode.hasPending()) {
-    planStatus.textContent = "Type mark name and press Enter (Esc to cancel)";
+    planStatus.textContent = "Введите имя метки и нажмите Enter (Esc - отмена)";
     markInputRow.style.display = "flex";
     markTextInput.focus();
   } else if (planMode.isMoving()) {
     const movingMark = planMode.marks.find((m) => m.id === planMode.getMovingId());
-    planStatus.textContent = `Click terrain to move "${movingMark?.text}"`;
+    planStatus.textContent = `Кликните по земле, чтобы переместить "${movingMark?.text}"`;
     markInputRow.style.display = "none";
   } else {
-    planStatus.textContent = "Double-click: mark | Click+drag: line";
+    planStatus.textContent = "Двойной клик: метка | Клик+перетаскивание: линия";
     markInputRow.style.display = "none";
   }
 }
@@ -218,7 +218,7 @@ const legacyPboParam = new URLSearchParams(window.location.search).get("pbo");
 const legacyWrpParam = new URLSearchParams(window.location.search).get("wrp");
 
 if (legacyPboParam || legacyWrpParam) {
-  setStatus("Legacy ?pbo= and ?wrp= links are not supported in static mode. Use ?map=<name> and pick a folder.");
+  setStatus("Старые ссылки ?pbo= и ?wrp= не поддерживаются в статическом режиме. Используйте ?map=<name> и выберите папку.");
 }
 
 interface MapFileEntry {
@@ -254,7 +254,7 @@ function openMapFolderDb(): Promise<IDBDatabase> {
       }
     };
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("Failed to open folder-handle database"));
+    request.onerror = () => reject(request.error ?? new Error("Не удалось открыть БД дескрипторов папок"));
   });
 }
 
@@ -266,7 +266,7 @@ async function loadStoredMapFolderHandle(): Promise<any | null> {
       const tx = db.transaction(MAP_FOLDER_STORE_NAME, "readonly");
       const req = tx.objectStore(MAP_FOLDER_STORE_NAME).get(MAP_FOLDER_HANDLE_KEY);
       req.onsuccess = () => resolve(req.result ?? null);
-      req.onerror = () => reject(req.error ?? new Error("Failed to read stored folder handle"));
+      req.onerror = () => reject(req.error ?? new Error("Не удалось прочитать сохраненный дескриптор папки"));
     });
   } finally {
     db.close();
@@ -280,7 +280,7 @@ async function saveStoredMapFolderHandle(handle: any): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(MAP_FOLDER_STORE_NAME, "readwrite");
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error ?? new Error("Failed to store folder handle"));
+      tx.onerror = () => reject(tx.error ?? new Error("Не удалось сохранить дескриптор папки"));
       tx.objectStore(MAP_FOLDER_STORE_NAME).put(handle, MAP_FOLDER_HANDLE_KEY);
     });
   } finally {
@@ -301,15 +301,34 @@ async function ensureMapFolderPermission(handle: any, requestPrompt: boolean): P
   return state === "granted";
 }
 
-async function collectMapEntriesFromDirectory(
+type MapFolderEntry = { file: File; relativePath: string };
+
+function normalizeName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+async function listDirectoryEntries(
+  dirHandle: any
+): Promise<Array<{ name: string; entry: any }>> {
+  const items: Array<{ name: string; entry: any }> = [];
+  for await (const [name, entry] of dirHandle.entries()) {
+    items.push({ name, entry });
+  }
+  return items;
+}
+
+async function collectMapEntriesRecursively(
   dirHandle: any,
-  pathPrefix = ""
-): Promise<Array<{ file: File; relativePath: string }>> {
-  const found: Array<{ file: File; relativePath: string }> = [];
+  pathPrefix = "",
+  maxDepth = 48
+): Promise<MapFolderEntry[]> {
+  if (maxDepth < 0) return [];
+  const found: MapFolderEntry[] = [];
   for await (const [name, entry] of dirHandle.entries()) {
     const relPath = pathPrefix ? `${pathPrefix}/${name}` : name;
     if (entry.kind === "directory") {
-      const nested = await collectMapEntriesFromDirectory(entry, relPath);
+      if (maxDepth === 0) continue;
+      const nested = await collectMapEntriesRecursively(entry, relPath, maxDepth - 1);
       found.push(...nested);
       continue;
     }
@@ -320,6 +339,108 @@ async function collectMapEntriesFromDirectory(
     found.push({ file, relativePath: relPath });
   }
   return found;
+}
+
+async function collectMapEntriesFromAddonsDirectory(
+  addonsHandle: any,
+  addonsPath: string
+): Promise<MapFolderEntry[]> {
+  // Addons folders are where map pbos live; keep recursion shallow to avoid unrelated trees.
+  return collectMapEntriesRecursively(addonsHandle, addonsPath, 4);
+}
+
+async function collectMapEntriesFromSelectedFolder(rootHandle: any): Promise<MapFolderEntry[]> {
+  const rootEntries = await listDirectoryEntries(rootHandle);
+  const rootName = normalizeName(String(rootHandle?.name || ""));
+  const addonsScanTargets: Array<{ handle: any; path: string }> = [];
+  const directMapFiles: MapFolderEntry[] = [];
+
+  if (rootName === "addons") {
+    addonsScanTargets.push({ handle: rootHandle, path: "" });
+  }
+
+  for (const item of rootEntries) {
+    if (item.entry.kind === "file" && /\.(pbo|wrp)$/i.test(item.name)) {
+      const file = await item.entry.getFile();
+      directMapFiles.push({ file, relativePath: item.name });
+      continue;
+    }
+    if (item.entry.kind !== "directory") continue;
+
+    const lower = normalizeName(item.name);
+    if (lower === "addons") {
+      addonsScanTargets.push({ handle: item.entry, path: item.name });
+      continue;
+    }
+
+    if (lower === "expansion") {
+      const expEntries = await listDirectoryEntries(item.entry);
+      const expAddons = expEntries.find((e) => e.entry.kind === "directory" && normalizeName(e.name) === "addons");
+      if (expAddons) {
+        addonsScanTargets.push({
+          handle: expAddons.entry,
+          path: `${item.name}/${expAddons.name}`,
+        });
+      }
+      continue;
+    }
+
+    if (item.name.startsWith("@")) {
+      const modEntries = await listDirectoryEntries(item.entry);
+      const modAddons = modEntries.find((e) => e.entry.kind === "directory" && normalizeName(e.name) === "addons");
+      if (modAddons) {
+        addonsScanTargets.push({
+          handle: modAddons.entry,
+          path: `${item.name}/${modAddons.name}`,
+        });
+      }
+      continue;
+    }
+
+    if (lower === "!workshop") {
+      const workshopMods = await listDirectoryEntries(item.entry);
+      for (const mod of workshopMods) {
+        if (mod.entry.kind !== "directory") continue;
+        const modEntries = await listDirectoryEntries(mod.entry);
+        const modAddons = modEntries.find((e) => e.entry.kind === "directory" && normalizeName(e.name) === "addons");
+        if (!modAddons) continue;
+        addonsScanTargets.push({
+          handle: modAddons.entry,
+          path: `${item.name}/${mod.name}/${modAddons.name}`,
+        });
+      }
+    }
+  }
+
+  const found = [...directMapFiles];
+  if (addonsScanTargets.length > 0) {
+    for (const target of addonsScanTargets) {
+      const entries = await collectMapEntriesFromAddonsDirectory(target.handle, target.path);
+      found.push(...entries);
+    }
+  } else {
+    // Non-standard folder layout: fallback to recursive scan for compatibility.
+    const recursive = await collectMapEntriesRecursively(rootHandle, "", 48);
+    found.push(...recursive);
+  }
+
+  const dedup = new Map<string, MapFolderEntry>();
+  for (const item of found) {
+    if (!dedup.has(item.relativePath)) {
+      dedup.set(item.relativePath, item);
+    }
+  }
+  return Array.from(dedup.values());
+}
+
+async function collectMapEntriesFromDirectory(
+  dirHandle: any,
+  pathPrefix = ""
+): Promise<Array<{ file: File; relativePath: string }>> {
+  if (pathPrefix) {
+    return collectMapEntriesRecursively(dirHandle, pathPrefix, 48);
+  }
+  return collectMapEntriesFromSelectedFolder(dirHandle);
 }
 
 // --- Replay State ---
@@ -485,6 +606,19 @@ function setReplayStatus(text: string) {
   replayStatusEl.textContent = text;
 }
 
+function replaySourceLabel(source: string): string {
+  if (source === "direct") return "напрямую";
+  if (source === "proxy") return "через прокси";
+  return source;
+}
+
+function replayProgressStageLabel(stage: string): string {
+  if (stage === "fetch_list") return "получение списка";
+  if (stage === "fetch_replay") return "получение реплея";
+  if (stage === "parse_replay") return "разбор реплея";
+  return stage;
+}
+
 function getReplayProxyUrl(): string | undefined {
   const value = replayProxyInput.value.trim();
   if (!value) {
@@ -639,15 +773,28 @@ function applyLoadedMap(
 
   setStatus(
     [
-      `Loaded ${mapName}`,
-      `Terrain: ${terrainData.gridWidth}x${terrainData.gridHeight}, cell ${terrainData.cellSize.toFixed(2)}m`,
-      `Elevation: ${terrainData.elevationMin.toFixed(1)} to ${terrainData.elevationMax.toFixed(1)}m`,
-      `Objects: ${objectsData.nObjects}`,
+      `Загружена карта: ${mapName}`,
+      `Рельеф: ${terrainData.gridWidth}x${terrainData.gridHeight}, шаг ${terrainData.cellSize.toFixed(2)}м`,
+      `Высоты: ${terrainData.elevationMin.toFixed(1)}..${terrainData.elevationMax.toFixed(1)}м`,
+      `Объекты: ${objectsData.nObjects}`,
       satelliteTiles > 0
-        ? `Satellite tiles: ${satelliteTiles} (generating texture...)`
-        : "No satellite tiles in this map",
+        ? `Спутниковые тайлы: ${satelliteTiles} (генерация текстуры...)`
+        : "В этой карте нет спутниковых тайлов",
     ].join("\n")
   );
+}
+
+function mapProgressStageLabel(stage: WorkerProgressMessage["stage"]): string {
+  const labels: Record<WorkerProgressMessage["stage"], string> = {
+    read: "чтение",
+    parse_pbo: "разбор PBO",
+    parse_wrp: "разбор WRP",
+    prepare_terrain: "подготовка рельефа",
+    prepare_objects: "подготовка объектов",
+    satellite: "спутниковая текстура",
+    done: "готово",
+  };
+  return labels[stage] || stage;
 }
 
 function handleWorkerProgress(msg: WorkerProgressMessage) {
@@ -655,7 +802,9 @@ function handleWorkerProgress(msg: WorkerProgressMessage) {
     typeof msg.completed === "number" && typeof msg.total === "number"
       ? ` (${msg.completed}/${msg.total})`
       : "";
-  setStatus(`Loading ${msg.mapName}: ${msg.stage}${progressText}${msg.detail ? `\n${msg.detail}` : ""}`);
+  setStatus(
+    `Загрузка ${msg.mapName}: ${mapProgressStageLabel(msg.stage)}${progressText}${msg.detail ? `\n${msg.detail}` : ""}`
+  );
 }
 
 function handleSatelliteReady(msg: WorkerSatelliteReadyMessage) {
@@ -673,7 +822,7 @@ function handleSatelliteReady(msg: WorkerSatelliteReadyMessage) {
   const texture = new THREE.CanvasTexture(canvas);
   applySatelliteTexture(currentTerrain, texture);
 
-  setStatus(`${statusEl.textContent}\nSatellite texture applied (${msg.width}x${msg.height}).`);
+  setStatus(`${statusEl.textContent}\nСпутниковая текстура применена (${msg.width}x${msg.height}).`);
 }
 
 function sampleTerrainHeight(x: number, z: number): number {
@@ -1120,14 +1269,14 @@ function describeReplayEventHtml(event: ReplayTimelineEvent): string {
     return (
       `<span class="${killer.sideClass}">${killer.nameHtml}</span> -> ` +
       `<span class="${victim.sideClass}">${victim.nameHtml}</span> ` +
-      `with ${escapeHtml(event.weapon)}${escapeHtml(dist)}`
+      `оружие: ${escapeHtml(event.weapon)}${escapeHtml(dist)}`
     );
   }
   if (event.type === 5) {
     const source = eventUnitLabel(event.sourceId);
     const target = eventUnitLabel(event.targetId);
     return (
-      `<span class="${source.sideClass}">${source.nameHtml}</span> hit ` +
+      `<span class="${source.sideClass}">${source.nameHtml}</span> попал в ` +
       `<span class="${target.sideClass}">${target.nameHtml}</span> ` +
       `(${escapeHtml(event.weapon)})`
     );
@@ -1141,7 +1290,7 @@ function describeReplayEventHtml(event: ReplayTimelineEvent): string {
       `${escapeHtml(event.action)}`
     );
   }
-  return `Event ${escapeHtml(String(event.eventType))}`;
+  return `Событие ${escapeHtml(String(event.eventType))}`;
 }
 
 function updateKillboard() {
@@ -1290,13 +1439,13 @@ function startReplayIfReady() {
   if (!currentMapName) {
     replayPendingStart = true;
     replayWaitingForMap = true;
-    setReplayStatus("Load a map to start replay.");
+    setReplayStatus("Чтобы запустить реплей, загрузите карту.");
     return;
   }
   if (!replayMapMatchesCurrentMap()) {
     replayPendingStart = true;
     replayWaitingForMap = true;
-    setReplayStatus(`Replay expects map "${replayData.header.mapKey}". Pick a matching map and load it.`);
+    setReplayStatus(`Реплей ожидает карту "${replayData.header.mapKey}". Выберите подходящую и загрузите.`);
     return;
   }
 
@@ -1308,7 +1457,7 @@ function startReplayIfReady() {
   const firstTime = replayData.frameTimes[0] || 0;
   replayCurrentTimeSec = firstTime;
   setReplayTime(firstTime, true);
-  setReplayStatus(`Replay ready: ${replayData.replayName}`);
+  setReplayStatus(`Реплей готов: ${replayData.replayName}`);
   updateReplayPanels();
 }
 
@@ -1317,7 +1466,7 @@ function attemptMapAutoloadForReplay() {
   if (mapFiles.length === 0) {
     replayPendingStart = true;
     replayWaitingForMap = true;
-    setReplayStatus("Pick map files/folder so replay can auto-load the terrain.");
+    setReplayStatus("Выберите карту (файлы/папку), чтобы реплей мог авто-загрузить рельеф.");
     return;
   }
 
@@ -1326,7 +1475,7 @@ function attemptMapAutoloadForReplay() {
     replayPendingStart = true;
     replayWaitingForMap = true;
     setReplayStatus(
-      `No map matched replay key "${replayData.header.mapKey}". Choose map manually and press Load Map.`
+      `Для ключа карты "${replayData.header.mapKey}" совпадений нет. Выберите карту вручную и нажмите "Загрузить карту".`
     );
     return;
   }
@@ -1335,7 +1484,7 @@ function attemptMapAutoloadForReplay() {
     replayPendingStart = true;
     replayWaitingForMap = true;
     const names = matches.slice(0, 4).map((item) => item.mapName).join(", ");
-    setReplayStatus(`Replay map is ambiguous (${names}). Select one map manually.`);
+    setReplayStatus(`Карта реплея определяется неоднозначно (${names}). Выберите одну вручную.`);
     return;
   }
 
@@ -1349,7 +1498,7 @@ function attemptMapAutoloadForReplay() {
   replayPendingStart = true;
   replayWaitingForMap = true;
   void loadMapFile(target.file, target.relativePath);
-  setReplayStatus(`Auto-loading map ${target.mapName} for replay...`);
+  setReplayStatus(`Автозагрузка карты ${target.mapName} для реплея...`);
 }
 
 function updateReplayMeta() {
@@ -1358,11 +1507,11 @@ function updateReplayMeta() {
     return;
   }
   replayMetaEl.textContent = [
-    `Replay: ${replayData.replayName}`,
-    `Map: ${replayData.header.mapKey}`,
-    `Mission: ${replayData.header.missionName}`,
-    `Source: ${replayData.source}`,
-    `Frames: ${replayData.frameTimes.length}`,
+    `Реплей: ${replayData.replayName}`,
+    `Карта: ${replayData.header.mapKey}`,
+    `Миссия: ${replayData.header.missionName}`,
+    `Источник: ${replaySourceLabel(replayData.source)}`,
+    `Кадры: ${replayData.frameTimes.length}`,
   ].join("\n");
 }
 
@@ -1380,7 +1529,7 @@ function renderReplayServerOptions() {
   replayServerFilter.innerHTML = "";
   const all = document.createElement("option");
   all.value = "all";
-  all.textContent = "All";
+  all.textContent = "Все";
   replayServerFilter.appendChild(all);
   for (const server of servers) {
     const option = document.createElement("option");
@@ -1403,7 +1552,7 @@ function renderReplaySelectOptions() {
   if (replayVisibleRows.length === 0) {
     replaySelect.disabled = true;
     btnLoadReplay.disabled = true;
-    replaySelect.innerHTML = '<option value="">-- no replays for this server --</option>';
+    replaySelect.innerHTML = '<option value="">-- для этого сервера реплеев нет --</option>';
     return;
   }
 
@@ -1435,7 +1584,7 @@ function setReplayRows(rows: ReplayListItem[]) {
 function loadReplayList() {
   if (replayIsLoading) return;
   replayIsLoading = true;
-  setReplayStatus("Fetching replay list...");
+  setReplayStatus("Получение списка реплеев...");
   replayWorker.postMessage({
     type: "load_replay_list",
     filters: ["1", "2", "3", "4", "10", "20:1"],
@@ -1450,7 +1599,7 @@ function loadSelectedReplay() {
   replayIsLoading = true;
   replayReady = false;
   replayPlaying = false;
-  setReplayStatus(`Loading replay ${selected.row.name}...`);
+  setReplayStatus(`Загрузка реплея ${selected.row.name}...`);
   replayWorker.postMessage({
     type: "load_replay_detail",
     replayName: selected.row.name,
@@ -1462,19 +1611,19 @@ function loadSelectedReplay() {
 replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
   const msg = event.data;
   if (msg.type === "replay_progress") {
-    setReplayStatus(msg.detail || msg.stage);
+    setReplayStatus(msg.detail || replayProgressStageLabel(msg.stage));
     return;
   }
   if (msg.type === "error") {
     replayIsLoading = false;
     replayReady = false;
-    setReplayStatus(`Error: ${msg.message}`);
+    setReplayStatus(`Ошибка: ${msg.message}`);
     return;
   }
   if (msg.type === "replay_list_loaded") {
     replayIsLoading = false;
     setReplayRows(msg.rows);
-    setReplayStatus(`Loaded ${msg.rows.length} replays (${msg.source}).`);
+    setReplayStatus(`Загружено реплеев: ${msg.rows.length} (${replaySourceLabel(msg.source)}).`);
 
     if (pendingAutoReplay && pendingAutoReplay !== replayLastAutoReplayParam) {
       const archiveFilter = pendingAutoReplayArchive ? Number(pendingAutoReplayArchive) : NaN;
@@ -1509,7 +1658,7 @@ replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
     updateEventboard(true);
     updateReplayPanels();
     updateUrlReplayParams(replayData.replayName, replayData.archive);
-    setReplayStatus(`Replay parsed (${replayData.source}). Matching map...`);
+    setReplayStatus(`Реплей разобран (${replaySourceLabel(replayData.source)}). Подбираю карту...`);
     attemptMapAutoloadForReplay();
   }
 };
@@ -1524,7 +1673,7 @@ loaderWorker.onmessage = (event: MessageEvent<MapWorkerResponse>) => {
 
   if (msg.type === "error") {
     isLoading = false;
-    setStatus(`Error: ${msg.message}`);
+    setStatus(`Ошибка: ${msg.message}`);
     return;
   }
 
@@ -1566,10 +1715,10 @@ function setMapEntries(entries: Array<{ file: File; relativePath: string }>) {
 
   mapSelect.innerHTML = "";
   if (mapFiles.length === 0) {
-    mapSelect.innerHTML = '<option value="">-- no maps found --</option>';
+    mapSelect.innerHTML = '<option value="">-- карты не найдены --</option>';
     mapSelect.disabled = true;
     btnLoadMap.disabled = true;
-    setStatus("No .pbo/.wrp files found in the selected files.");
+    setStatus("В выбранных файлах нет .pbo/.wrp.");
     return;
   }
 
@@ -1593,12 +1742,12 @@ function setMapEntries(entries: Array<{ file: File; relativePath: string }>) {
       void loadMapFile(matched.file, matched.relativePath);
       autoMapTriggered = true;
     } else {
-      setStatus(`Found ${mapFiles.length} maps. Auto-load target "${autoTarget}" not found.`);
+      setStatus(`Найдено карт: ${mapFiles.length}. Цель автозагрузки "${autoTarget}" не найдена.`);
     }
   }
 
   if (!autoMapTriggered && (!replayData || !replayPendingStart)) {
-    setStatus(`Found ${mapFiles.length} maps. Select one and click Load Map.`);
+    setStatus(`Найдено карт: ${mapFiles.length}. Выберите карту и нажмите "Загрузить карту".`);
   }
 
   if (replayData && replayPendingStart) {
@@ -1628,17 +1777,17 @@ async function openStoredMapFolder(requestPrompt: boolean) {
   const handle = await loadStoredMapFolderHandle();
   if (!handle) {
     hasStoredMapFolderHandle = false;
-    setStatus("No previously selected folder is stored.");
+    setStatus("Ранее выбранная папка не сохранена.");
     return;
   }
 
   const granted = await ensureMapFolderPermission(handle, requestPrompt);
   if (!granted) {
-    setStatus('Folder permission is not granted. Use "Reopen Last Folder" to grant access.');
+    setStatus('Нет доступа к папке. Нажмите "Открыть прошлую папку", чтобы выдать разрешение.');
     return;
   }
 
-  setStatus("Scanning folder for .pbo/.wrp map files...");
+  setStatus("Сканирую папку в поиске файлов .pbo/.wrp...");
   const entries = await collectMapEntriesFromDirectory(handle);
   setMapEntries(entries);
 }
@@ -1658,7 +1807,7 @@ async function pickFolderWithPersistentAccess() {
     } catch {
       hasStoredMapFolderHandle = false;
     }
-    setStatus("Scanning folder for .pbo/.wrp map files...");
+    setStatus("Сканирую папку в поиске файлов .pbo/.wrp...");
     const entries = await collectMapEntriesFromDirectory(handle);
     setMapEntries(entries);
     return true;
@@ -1666,7 +1815,7 @@ async function pickFolderWithPersistentAccess() {
     if (err instanceof DOMException && err.name === "AbortError") {
       return true;
     }
-    setStatus(`Error picking folder: ${err instanceof Error ? err.message : String(err)}`);
+    setStatus(`Ошибка выбора папки: ${err instanceof Error ? err.message : String(err)}`);
     return true;
   }
 }
@@ -1676,7 +1825,7 @@ async function loadMapFile(file: File, displayName: string) {
   isLoading = true;
 
   try {
-    setStatus(`Reading ${displayName}...`);
+    setStatus(`Чтение ${displayName}...`);
     const buffer = await file.arrayBuffer();
 
     loaderWorker.postMessage(
@@ -1689,7 +1838,7 @@ async function loadMapFile(file: File, displayName: string) {
     );
   } catch (err: unknown) {
     isLoading = false;
-    setStatus(`Error reading map file: ${err instanceof Error ? err.message : String(err)}`);
+    setStatus(`Ошибка чтения файла карты: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -1744,14 +1893,14 @@ void (async () => {
     if (!stored) return;
     const granted = await ensureMapFolderPermission(stored, false);
     if (!granted) {
-      setStatus('Found a previously selected folder. Click "Reopen Last Folder" to grant access.');
+      setStatus('Найдена ранее выбранная папка. Нажмите "Открыть прошлую папку", чтобы выдать доступ.');
       return;
     }
-    setStatus("Restoring maps from previously selected folder...");
+    setStatus("Восстанавливаю карты из ранее выбранной папки...");
     const entries = await collectMapEntriesFromDirectory(stored);
     setMapEntries(entries);
   } catch (err: unknown) {
-    setStatus(`Failed to restore previous folder: ${err instanceof Error ? err.message : String(err)}`);
+    setStatus(`Не удалось восстановить прошлую папку: ${err instanceof Error ? err.message : String(err)}`);
   }
 })();
 
@@ -1761,7 +1910,7 @@ btnLoadMap.addEventListener("click", () => {
   void loadMapFile(selected.file, selected.relativePath);
   if (replayPendingStart) {
     replayWaitingForMap = true;
-    setReplayStatus("Loading selected map for replay...");
+    setReplayStatus("Загрузка выбранной карты для реплея...");
   }
 });
 
@@ -2024,11 +2173,11 @@ window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-setStatus("Pick a folder with map files (or pick files) to start.");
+setStatus("Для начала выберите папку с картами (или отдельные файлы). Можно выбрать корневую папку игры.");
 setReplayStatus(
   DEPLOY_REPLAY_PROXY_URL
-    ? "Fetch replay list to begin. Deployment proxy is configured."
-    : "Fetch replay list to begin."
+    ? "Чтобы начать, получите список реплеев. Прокси деплоя настроен."
+    : "Чтобы начать, получите список реплеев."
 );
 if (pendingAutoReplay) {
   loadReplayList();

@@ -114,7 +114,7 @@ async function fetchJsonWithFallback(url: string, proxyUrl?: string): Promise<{
       return { json: await response.json(), source: "proxy" };
     } catch (err: unknown) {
       const proxyError = normalizeError(err);
-      throw new Error(`Replay fetch via proxy failed: ${proxyError}`);
+      throw new Error(`Не удалось получить реплей через прокси: ${proxyError}`);
     }
   }
 
@@ -133,19 +133,17 @@ async function fetchJsonWithFallback(url: string, proxyUrl?: string): Promise<{
     directError = normalizeError(err);
   }
 
-  throw new Error(
-    `Replay fetch failed. ${directError}. This is often browser CORS blocking cross-origin access.`
-  );
+  throw new Error(`Не удалось получить реплей. ${directError}. Часто это CORS-блокировка браузера.`);
 }
 
 function parseReplayListPayload(payload: unknown): ReplayListItem[] {
   const data = payload as ReplayListResponse;
   if (data.error && toStringSafe(data.error).trim()) {
-    throw new Error(`Replay list API error: ${toStringSafe(data.error)}`);
+    throw new Error(`Ошибка API списка реплеев: ${toStringSafe(data.error)}`);
   }
 
   if (!Array.isArray(data.rows)) {
-    throw new Error("Replay list payload is missing rows");
+    throw new Error("В ответе списка реплеев отсутствует поле rows");
   }
 
   const rows: ReplayListItem[] = [];
@@ -245,16 +243,16 @@ function parseReplayPayload(
 ): ReplayData {
   const data = payload as ReplayDetailResponse;
   if (data.error && toStringSafe(data.error).trim()) {
-    throw new Error(`Replay detail API error: ${toStringSafe(data.error)}`);
+    throw new Error(`Ошибка API деталей реплея: ${toStringSafe(data.error)}`);
   }
 
   if (typeof data.json !== "string") {
-    throw new Error("Replay detail payload does not contain json string");
+    throw new Error("В ответе деталей реплея нет строки json");
   }
 
   const raw = JSON.parse(data.json) as unknown;
   if (!Array.isArray(raw) || raw.length < 2) {
-    throw new Error("Replay format is invalid");
+    throw new Error("Некорректный формат реплея");
   }
 
   const headerRaw = Array.isArray(raw[0]) ? raw[0] : [];
@@ -397,7 +395,7 @@ function parseReplayPayload(
 
 async function handleLoadReplayList(filters: string[] | undefined, proxyUrl?: string) {
   const listFilters = filters && filters.length > 0 ? filters : DEFAULT_FILTERS;
-  progress("fetch_list", "Fetching replay list");
+  progress("fetch_list", "Получение списка реплеев");
   const listUrl = buildListUrl(listFilters);
   const { json, source } = await fetchJsonWithFallback(listUrl, proxyUrl);
   const rows = parseReplayListPayload(json);
@@ -409,10 +407,10 @@ async function handleLoadReplayList(filters: string[] | undefined, proxyUrl?: st
 }
 
 async function handleLoadReplayDetail(replayName: string, archive: number | undefined, proxyUrl?: string) {
-  progress("fetch_replay", `Fetching replay ${replayName}`);
+  progress("fetch_replay", `Получение реплея ${replayName}`);
   const replayUrl = buildReplayDetailUrl(replayName, archive ?? 1);
   const { json, source } = await fetchJsonWithFallback(replayUrl, proxyUrl);
-  progress("parse_replay", "Parsing replay timeline");
+  progress("parse_replay", "Разбор таймлайна реплея");
   const replay = parseReplayPayload(replayName, archive ?? 1, source, json);
   post(
     {

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Arma 3 Map Viewer</title>
+    <title>Просмотр карт Arma 3</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body { background: #1a1a2e; color: #eee; font-family: monospace; overflow: hidden; }
@@ -411,74 +411,74 @@
   </head>
   <body>
     <details id="ui-shell" open>
-      <summary>Map Viewer Controls</summary>
+      <summary>Панель управления картой</summary>
       <div id="ui">
-        <h1>Arma 3 Map Viewer</h1>
+        <h1>Просмотр карт Arma 3</h1>
         <details id="map-controls" open>
-          <summary>Map Selection</summary>
+          <summary>Выбор карты</summary>
           <div class="row" style="margin-top:6px;">
-            <button id="btn-pick-folder">Pick Folder</button>
-            <button id="btn-reopen-folder" disabled>Reopen Last Folder</button>
-            <button id="btn-pick-files">Pick File(s)</button>
+            <button id="btn-pick-folder">Выбрать папку</button>
+            <button id="btn-reopen-folder" disabled>Открыть прошлую папку</button>
+            <button id="btn-pick-files">Выбрать файл(ы)</button>
           </div>
           <input id="folder-picker" type="file" webkitdirectory directory multiple style="display:none" />
           <input id="file-picker" type="file" accept=".pbo,.wrp" multiple style="display:none" />
 
-          <label>Map:</label>
+          <label>Карта:</label>
           <select id="map-select" disabled>
-            <option value="">-- pick folder/files first --</option>
+            <option value="">-- сначала выберите папку/файлы --</option>
           </select>
 
           <div class="row" style="margin-top:6px;">
-            <button id="btn-load-map" disabled>Load Map</button>
+            <button id="btn-load-map" disabled>Загрузить карту</button>
           </div>
         </details>
 
         <details id="replay-controls" open>
-          <summary>Replay Selection</summary>
+          <summary>Выбор реплея</summary>
           <div class="row" style="margin-top:6px;">
-            <button id="btn-fetch-replays">Fetch Replays</button>
+            <button id="btn-fetch-replays">Получить реплеи</button>
           </div>
-          <label>Server:</label>
+          <label>Сервер:</label>
           <select id="replay-server-filter">
-            <option value="all">All</option>
+            <option value="all">Все</option>
           </select>
-          <label>Replay:</label>
+          <label>Реплей:</label>
           <select id="replay-select" disabled>
-            <option value="">-- fetch replays first --</option>
+            <option value="">-- сначала получите список реплеев --</option>
           </select>
           <div class="row" style="margin-top:6px;">
-            <button id="btn-load-replay" disabled>Load Replay</button>
+            <button id="btn-load-replay" disabled>Загрузить реплей</button>
           </div>
           <div id="replay-proxy-row">
-            <label>Proxy URL (override):</label>
+            <label>URL прокси (переопределить):</label>
             <input id="replay-proxy" type="text" placeholder="https://proxy.example/?url={url}" />
           </div>
-          <div id="replay-status">Fetch replay list to begin.</div>
+          <div id="replay-status">Чтобы начать, получите список реплеев.</div>
         </details>
 
-        <div class="hint">Tip: use <code>?map=map_name</code> in URL to auto-load after folder pick.</div>
-        <div id="status">Pick a folder with map files (or pick files) to start.</div>
+        <div class="hint">Подсказка: можно выбирать корневую папку игры. Также поддерживается <code>?map=map_name</code> для автозагрузки карты.</div>
+        <div id="status">Для старта выберите папку с картами (или отдельные файлы).</div>
       </div>
     </details>
 
-    <button id="plan-toggle" title="Toggle Plan Mode (P)">Plan</button>
+    <button id="plan-toggle" title="Режим планирования (P)">План</button>
     <div id="plan-panel">
-      <h2>Commander Plan</h2>
-      <div class="plan-status" id="plan-status">Double-click terrain to place a mark</div>
+      <h2>Планирование</h2>
+      <div class="plan-status" id="plan-status">Двойной клик по земле - поставить метку</div>
       <div style="display:flex; gap:4px; margin-bottom:6px;">
         <select id="mark-color" style="width:40px; padding:4px; background:#222; border:1px solid #444; color:#eee; border-radius:3px; font-family:monospace; font-size:12px; cursor:pointer;">
           <option value="R">R</option>
           <option value="G" selected>G</option>
           <option value="B">B</option>
         </select>
-        <select id="line-type" title="Line type" style="flex:1; padding:4px; background:#222; border:1px solid #444; color:#eee; border-radius:3px; font-family:monospace; font-size:12px; cursor:pointer;">
-          <option value="ground">Ground line</option>
-          <option value="straight">Straight line</option>
+        <select id="line-type" title="Тип линии" style="flex:1; padding:4px; background:#222; border:1px solid #444; color:#eee; border-radius:3px; font-family:monospace; font-size:12px; cursor:pointer;">
+          <option value="ground">Линия по земле</option>
+          <option value="straight">Прямая линия</option>
         </select>
       </div>
       <div class="plan-input-row">
-        <input type="text" id="mark-text" placeholder="Mark label (e.g. Alpha)" />
+        <input type="text" id="mark-text" placeholder="Название метки (например, Alpha)" />
       </div>
       <div id="plan-mark-list"></div>
     </div>
@@ -486,14 +486,14 @@
     <div id="hud"></div>
     <div id="replay-label-layer"></div>
     <div id="replay-panel">
-      <h2>Replay Timeline</h2>
+      <h2>Таймлайн реплея</h2>
       <div id="replay-meta"></div>
       <div class="row">
-        <button id="btn-replay-play">Play</button>
-        <button id="btn-replay-pause" disabled>Pause</button>
+        <button id="btn-replay-play">Старт</button>
+        <button id="btn-replay-pause" disabled>Пауза</button>
         <label style="display:flex; align-items:center; gap:4px; color:#bbb; font-size:11px;">
           <input type="checkbox" id="replay-pin-kills" />
-          Pin kills
+          Фиксировать убийства
         </label>
         <select id="replay-speed">
           <option value="0.5">0.5x</option>
@@ -508,14 +508,14 @@
       </div>
       <input id="replay-seek" type="range" min="0" max="0" value="0" />
       <div class="replay-filter-row">
-        <label><input type="checkbox" id="replay-filter-messages" checked /> messages</label>
-        <label><input type="checkbox" id="replay-filter-kills" checked /> kills</label>
-        <label><input type="checkbox" id="replay-filter-hits" checked /> hits</label>
-        <label><input type="checkbox" id="replay-filter-medical" checked /> medical</label>
+        <label><input type="checkbox" id="replay-filter-messages" checked /> сообщения</label>
+        <label><input type="checkbox" id="replay-filter-kills" checked /> убийства</label>
+        <label><input type="checkbox" id="replay-filter-hits" checked /> попадания</label>
+        <label><input type="checkbox" id="replay-filter-medical" checked /> медицина</label>
       </div>
       <div class="replay-board-tabs">
-        <button id="btn-board-kills" class="replay-board-tab active" type="button">Killboard</button>
-        <button id="btn-board-events" class="replay-board-tab" type="button">Eventboard</button>
+        <button id="btn-board-kills" class="replay-board-tab active" type="button">Убийства</button>
+        <button id="btn-board-events" class="replay-board-tab" type="button">События</button>
       </div>
       <div id="replay-board-kills" class="replay-board-pane active">
         <div id="replay-killboard"></div>
@@ -526,7 +526,7 @@
     </div>
     <canvas id="minimap" width="250" height="250"></canvas>
     <div id="controls-help">
-      WASD - Move | QE - Up/Down | Mouse - Look | Shift - Fast | Scroll - Speed | P - Plan Mode
+      WASD - Движение | QE - Вверх/вниз | Мышь - Осмотр | Shift - Ускорение | Колесо - Скорость | P - Режим плана
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

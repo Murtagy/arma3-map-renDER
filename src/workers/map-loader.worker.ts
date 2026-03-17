@@ -64,7 +64,7 @@ function collectSatelliteTiles(pbo: PboFile): TileEntry[] {
 
 function generateSatelliteRgba(pbo: PboFile, tiles: TileEntry[], requestedSize: number, mapName: string) {
   if (tiles.length === 0) {
-    throw new Error("No satellite tiles found in this map PBO");
+    throw new Error("В этом PBO карты не найдены спутниковые тайлы");
   }
 
   let maxCol = 0;
@@ -125,7 +125,7 @@ function generateSatelliteRgba(pbo: PboFile, tiles: TileEntry[], requestedSize: 
 
     completed++;
     if (completed % 100 === 0 || completed === total) {
-      progress(mapName, "satellite", "Decoding satellite tiles", completed, total);
+      progress(mapName, "satellite", "Декодирование спутниковых тайлов", completed, total);
     }
   }
 
@@ -137,19 +137,19 @@ async function handleLoadMap(fileName: string, fileBytes: ArrayBuffer) {
   const mapName = getBaseName(fileName);
   const bytes = new Uint8Array(fileBytes);
 
-  progress(mapName, "read", `Reading ${fileName}`);
+  progress(mapName, "read", `Чтение ${fileName}`);
 
   let wrpBytes: Uint8Array;
   let pbo: PboFile | undefined;
   let satTiles: TileEntry[] = [];
 
   if (sourceType === "pbo") {
-    progress(mapName, "parse_pbo", "Parsing PBO headers");
+    progress(mapName, "parse_pbo", "Разбор заголовков PBO");
     pbo = parsePboBuffer(bytes);
 
     const wrpEntry = pbo.entries.find((entry) => entry.filename.toLowerCase().endsWith(".wrp"));
     if (!wrpEntry) {
-      throw new Error("No WRP file found in PBO");
+      throw new Error("В PBO не найден WRP-файл");
     }
 
     wrpBytes = extractEntry(pbo, wrpEntry);
@@ -158,10 +158,10 @@ async function handleLoadMap(fileName: string, fileBytes: ArrayBuffer) {
     wrpBytes = bytes;
   }
 
-  progress(mapName, "parse_wrp", "Parsing WRP terrain and objects");
+  progress(mapName, "parse_wrp", "Разбор рельефа и объектов WRP");
   const wrp = parseWrp(wrpBytes);
 
-  progress(mapName, "prepare_terrain", "Preparing terrain buffers");
+  progress(mapName, "prepare_terrain", "Подготовка буферов рельефа");
   const terrain = {
     gridWidth: wrp.info.mapSizeX,
     gridHeight: wrp.info.mapSizeY,
@@ -172,7 +172,7 @@ async function handleLoadMap(fileName: string, fileBytes: ArrayBuffer) {
     elevations: wrp.elevations,
   };
 
-  progress(mapName, "prepare_objects", "Preparing object instances");
+  progress(mapName, "prepare_objects", "Подготовка экземпляров объектов");
   const objects = wrp.objects;
 
   const map: WorkerMapInfo = {
@@ -186,7 +186,7 @@ async function handleLoadMap(fileName: string, fileBytes: ArrayBuffer) {
 
   cache.set(mapName, { map, pbo, satTiles });
 
-  progress(mapName, "done", "Map parsed");
+  progress(mapName, "done", "Карта разобрана");
   post(
     {
       type: "map_loaded",
@@ -208,13 +208,13 @@ async function handleLoadMap(fileName: string, fileBytes: ArrayBuffer) {
 async function handleGenerateSatellite(mapName: string, size: number | undefined) {
   const cached = cache.get(mapName);
   if (!cached) {
-    throw new Error(`Map "${mapName}" is not loaded`);
+    throw new Error(`Карта "${mapName}" не загружена`);
   }
   if (!cached.pbo) {
-    throw new Error("Satellite textures are only available for maps loaded from PBO files");
+    throw new Error("Спутниковые текстуры доступны только для карт, загруженных из PBO");
   }
 
-  progress(mapName, "satellite", "Starting satellite generation", 0, cached.satTiles.length);
+  progress(mapName, "satellite", "Запуск генерации спутниковой текстуры", 0, cached.satTiles.length);
   const { width, height, rgba } = generateSatelliteRgba(
     cached.pbo,
     cached.satTiles,
@@ -249,7 +249,7 @@ self.onmessage = async (event: MessageEvent<MapWorkerRequest>) => {
   } catch (err: unknown) {
     const message = err instanceof Error
       ? `${err.message}${err.stack ? `\n${err.stack}` : ""}`
-      : "Unknown worker error";
+      : "Неизвестная ошибка воркера";
     post({ type: "error", message });
   }
 };
