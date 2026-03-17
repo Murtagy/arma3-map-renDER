@@ -237,6 +237,91 @@ let currentTerrainInfo: {
   mapSize: number;
 } | null = null;
 
+const MAP_FOLDER_DB_NAME = "arma3-map-viewer";
+const MAP_FOLDER_STORE_NAME = "settings";
+const MAP_FOLDER_HANDLE_KEY = "last-map-folder-handle";
+const supportsPersistentFolderAccess =
+  typeof window !== "undefined" && "showDirectoryPicker" in window && "indexedDB" in window;
+let hasStoredMapFolderHandle = false;
+
+function openMapFolderDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(MAP_FOLDER_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(MAP_FOLDER_STORE_NAME)) {
+        db.createObjectStore(MAP_FOLDER_STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("Failed to open folder-handle database"));
+  });
+}
+
+async function loadStoredMapFolderHandle(): Promise<any | null> {
+  if (!supportsPersistentFolderAccess) return null;
+  const db = await openMapFolderDb();
+  try {
+    return await new Promise<any | null>((resolve, reject) => {
+      const tx = db.transaction(MAP_FOLDER_STORE_NAME, "readonly");
+      const req = tx.objectStore(MAP_FOLDER_STORE_NAME).get(MAP_FOLDER_HANDLE_KEY);
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => reject(req.error ?? new Error("Failed to read stored folder handle"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function saveStoredMapFolderHandle(handle: any): Promise<void> {
+  if (!supportsPersistentFolderAccess) return;
+  const db = await openMapFolderDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(MAP_FOLDER_STORE_NAME, "readwrite");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("Failed to store folder handle"));
+      tx.objectStore(MAP_FOLDER_STORE_NAME).put(handle, MAP_FOLDER_HANDLE_KEY);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function ensureMapFolderPermission(handle: any, requestPrompt: boolean): Promise<boolean> {
+  const queryPermission = handle?.queryPermission;
+  const requestPermission = handle?.requestPermission;
+  if (typeof queryPermission === "function") {
+    const state = await queryPermission.call(handle, { mode: "read" });
+    if (state === "granted") return true;
+    if (!requestPrompt) return false;
+  }
+  if (!requestPrompt || typeof requestPermission !== "function") return false;
+  const state = await requestPermission.call(handle, { mode: "read" });
+  return state === "granted";
+}
+
+async function collectMapEntriesFromDirectory(
+  dirHandle: any,
+  pathPrefix = ""
+): Promise<Array<{ file: File; relativePath: string }>> {
+  const found: Array<{ file: File; relativePath: string }> = [];
+  for await (const [name, entry] of dirHandle.entries()) {
+    const relPath = pathPrefix ? `${pathPrefix}/${name}` : name;
+    if (entry.kind === "directory") {
+      const nested = await collectMapEntriesFromDirectory(entry, relPath);
+      found.push(...nested);
+      continue;
+    }
+    if (entry.kind !== "file" || !/\.(pbo|wrp)$/i.test(name)) {
+      continue;
+    }
+    const file = await entry.getFile();
+    found.push({ file, relativePath: relPath });
+  }
+  return found;
+}
+
 // --- Replay State ---
 interface ReplayRowEntry {
   id: string;
@@ -279,6 +364,8 @@ interface ReplayLine {
   kind: "kill" | "hit";
 }
 
+type ReplayBoardTab = "kills" | "events";
+
 let replayRows: ReplayRowEntry[] = [];
 let replayVisibleRows: ReplayRowEntry[] = [];
 let replayData: ReplayData | null = null;
@@ -298,6 +385,9 @@ let replayEventFilter = {
   hits: true,
   medical: true,
 };
+let replayEventboardLastSignature = "";
+let replayEventboardManualScrollWhilePaused = false;
+let replayEventboardProgrammaticScroll = false;
 
 const replayRuntimeStates = new Map<number, RuntimeUnitState>();
 const replayVisuals = new Map<number, RuntimeUnitVisual>();
@@ -313,6 +403,7 @@ const SIDE_COLORS: Record<number, number> = {
   4: 0xb0b0b0,
   5: 0x444444,
 };
+const REPLAY_SPEED_MULTIPLIER = 2;
 
 const pendingAutoReplay = new URLSearchParams(window.location.search).get("replay");
 const pendingAutoReplayArchive = new URLSearchParams(window.location.search).get("archive");
@@ -336,6 +427,10 @@ const replaySeekInput = document.getElementById("replay-seek") as HTMLInputEleme
 const replaySpeedSelect = document.getElementById("replay-speed") as HTMLSelectElement;
 const replayTimeEl = document.getElementById("replay-time") as HTMLElement;
 const replayPinKillsInput = document.getElementById("replay-pin-kills") as HTMLInputElement;
+const replayBoardKillsBtn = document.getElementById("btn-board-kills") as HTMLButtonElement;
+const replayBoardEventsBtn = document.getElementById("btn-board-events") as HTMLButtonElement;
+const replayBoardKillsPane = document.getElementById("replay-board-kills") as HTMLElement;
+const replayBoardEventsPane = document.getElementById("replay-board-events") as HTMLElement;
 const replayKillboardEl = document.getElementById("replay-killboard") as HTMLElement;
 const replayEventboardEl = document.getElementById("replay-eventboard") as HTMLElement;
 const replayFilterMessages = document.getElementById("replay-filter-messages") as HTMLInputElement;
@@ -343,12 +438,24 @@ const replayFilterKills = document.getElementById("replay-filter-kills") as HTML
 const replayFilterHits = document.getElementById("replay-filter-hits") as HTMLInputElement;
 const replayFilterMedical = document.getElementById("replay-filter-medical") as HTMLInputElement;
 const replayLabelLayer = document.getElementById("replay-label-layer") as HTMLElement;
+let replayBoardTab: ReplayBoardTab = localStorage.getItem("replay_board_tab") === "events" ? "events" : "kills";
 
 replayProxyInput.value = localStorage.getItem("replay_proxy_url") || DEPLOY_REPLAY_PROXY_URL;
 replaySpeedSelect.value = localStorage.getItem("replay_speed") || "1";
 if (replayProxyInput.value.trim()) {
   replayProxyRow.style.display = "none";
 }
+
+function setReplayBoardTab(tab: ReplayBoardTab) {
+  replayBoardTab = tab;
+  replayBoardKillsBtn.classList.toggle("active", tab === "kills");
+  replayBoardEventsBtn.classList.toggle("active", tab === "events");
+  replayBoardKillsPane.classList.toggle("active", tab === "kills");
+  replayBoardEventsPane.classList.toggle("active", tab === "events");
+  localStorage.setItem("replay_board_tab", tab);
+}
+
+setReplayBoardTab(replayBoardTab);
 
 function extractMapName(name: string): string {
   const file = name.split("/").pop()?.split("\\").pop() ?? name;
@@ -628,6 +735,8 @@ function clearReplayRuntime() {
   replayCurrentTimeSec = 0;
   replayLastAppliedFrame = -1;
   replayPlaying = false;
+  replayEventboardLastSignature = "";
+  replayEventboardManualScrollWhilePaused = false;
 }
 
 function sideColor(side: number): number {
@@ -657,19 +766,21 @@ function ensureReplayVisual(id: number): RuntimeUnitVisual | null {
   const isMan = unit.unitType === "man";
   const geometry = isMan
     ? (() => {
-        const g = new THREE.ConeGeometry(4, 20, 3);
+        const g = new THREE.ConeGeometry(3.08, 10.5, 3);
         g.rotateX(Math.PI / 2); // point along +Z so yaw=0 is north
         return g;
       })()
     : new THREE.SphereGeometry(8, 10, 10);
   const material = new THREE.MeshLambertMaterial({
     color: sideColor(unit.side),
+    emissive: 0x202020,
     transparent: true,
     opacity: 0.95,
     depthWrite: false,
   });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.visible = false;
+  mesh.renderOrder = 2;
   replayGroup.add(mesh);
 
   const labelEl = document.createElement("div");
@@ -756,7 +867,7 @@ function updateReplayVisuals(nowSec: number) {
     const dead = stateIsDead(unit.unitType, state.stateFlag);
     const unconscious = stateIsUnconscious(unit.unitType, state.stateFlag);
     visual.mesh.visible = true;
-    const meshY = unit.unitType === "man" ? worldPos.y + 5 : worldPos.y;
+    const meshY = unit.unitType === "man" ? worldPos.y + 2.625 : worldPos.y;
     visual.mesh.position.set(worldPos.x, meshY, worldPos.z);
     visual.mesh.rotation.set(0, mapDirDegToWorldYawRad(worldPos.dirDeg), 0);
     visual.labelEl.textContent = visual.name || `#${id}`;
@@ -764,12 +875,15 @@ function updateReplayVisuals(nowSec: number) {
     const material = visual.mesh.material as THREE.MeshLambertMaterial;
     if (dead) {
       material.color.setHex(0x555555);
+      material.emissive.setHex(0x050505);
       material.opacity = 0.35;
     } else if (unconscious) {
       material.color.setHex(0xffd166);
+      material.emissive.setHex(0x332200);
       material.opacity = 0.65;
     } else {
       material.color.setHex(sideColor(unit.side));
+      material.emissive.setHex(0x202020);
       material.opacity = 0.95;
     }
 
@@ -971,6 +1085,7 @@ function setReplayTime(timeSec: number, emitVisualEvents: boolean) {
 
   replayCurrentFrame = targetFrame;
   updateReplayVisuals(replayCurrentTimeSec);
+  updateEventboard();
   updateReplayPanels();
 }
 
@@ -980,31 +1095,53 @@ function focusReplayUnit(unitId: number) {
   camera.position.set(pos.x + 60, pos.y + 120, pos.z + 60);
 }
 
-function describeReplayEvent(event: ReplayTimelineEvent): string {
-  if (event.type === 0) return event.message;
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function eventUnitLabel(unitId: number): { nameHtml: string; sideClass: string } {
+  const unit = replayUnitsById.get(unitId);
+  const name = unit?.playerName || unit?.name || `#${unitId}`;
+  const sideClass = `unit-side-${unitSideCss(unit?.side ?? 4)}`;
+  return { nameHtml: escapeHtml(name), sideClass };
+}
+
+function describeReplayEventHtml(event: ReplayTimelineEvent): string {
+  if (event.type === 0) return escapeHtml(event.message);
   if (event.type === 4) {
-    const killer = replayUnitsById.get(event.killerId);
-    const victim = replayUnitsById.get(event.victimId);
-    const killerName = killer?.playerName || killer?.name || `#${event.killerId}`;
-    const victimName = victim?.playerName || victim?.name || `#${event.victimId}`;
+    const killer = eventUnitLabel(event.killerId);
+    const victim = eventUnitLabel(event.victimId);
     const dist = event.distance > 0 ? ` (${Math.round(event.distance)}m)` : "";
-    return `${killerName} -> ${victimName} with ${event.weapon}${dist}`;
+    return (
+      `<span class="${killer.sideClass}">${killer.nameHtml}</span> -> ` +
+      `<span class="${victim.sideClass}">${victim.nameHtml}</span> ` +
+      `with ${escapeHtml(event.weapon)}${escapeHtml(dist)}`
+    );
   }
   if (event.type === 5) {
-    const source = replayUnitsById.get(event.sourceId);
-    const target = replayUnitsById.get(event.targetId);
-    const sourceName = source?.playerName || source?.name || `#${event.sourceId}`;
-    const targetName = target?.playerName || target?.name || `#${event.targetId}`;
-    return `${sourceName} hit ${targetName} (${event.weapon})`;
+    const source = eventUnitLabel(event.sourceId);
+    const target = eventUnitLabel(event.targetId);
+    return (
+      `<span class="${source.sideClass}">${source.nameHtml}</span> hit ` +
+      `<span class="${target.sideClass}">${target.nameHtml}</span> ` +
+      `(${escapeHtml(event.weapon)})`
+    );
   }
   if (event.type === 7) {
-    const actor = replayUnitsById.get(event.actorId);
-    const target = replayUnitsById.get(event.targetId);
-    const actorName = actor?.playerName || actor?.name || `#${event.actorId}`;
-    const targetName = target?.playerName || target?.name || `#${event.targetId}`;
-    return `${actorName} -> ${targetName}: ${event.action}`;
+    const actor = eventUnitLabel(event.actorId);
+    const target = eventUnitLabel(event.targetId);
+    return (
+      `<span class="${actor.sideClass}">${actor.nameHtml}</span> -> ` +
+      `<span class="${target.sideClass}">${target.nameHtml}</span>: ` +
+      `${escapeHtml(event.action)}`
+    );
   }
-  return `Event ${event.eventType}`;
+  return `Event ${escapeHtml(String(event.eventType))}`;
 }
 
 function updateKillboard() {
@@ -1062,33 +1199,67 @@ function updateKillboard() {
     .join("");
 }
 
-function filteredReplayEvents(): ReplayTimelineEvent[] {
+function visibleReplayEventsAt(timeSec: number): ReplayTimelineEvent[] {
   if (!replayData) return [];
-  return replayData.events.filter((event) => {
-    if (event.type === 0) return replayEventFilter.messages;
-    if (event.type === 4) return replayEventFilter.kills;
-    if (event.type === 5) return replayEventFilter.hits;
-    if (event.type === 7) return replayEventFilter.medical;
-    return false;
-  });
+  const limit = 1500;
+  const out: ReplayTimelineEvent[] = [];
+  for (let i = replayData.events.length - 1; i >= 0; i--) {
+    const event = replayData.events[i];
+    if (event.timeSec > timeSec) continue;
+    const include =
+      (event.type === 0 && replayEventFilter.messages) ||
+      (event.type === 4 && replayEventFilter.kills) ||
+      (event.type === 5 && replayEventFilter.hits) ||
+      (event.type === 7 && replayEventFilter.medical);
+    if (!include) continue;
+    out.push(event);
+    if (out.length >= limit) break;
+  }
+  out.reverse();
+  return out;
 }
 
-function updateEventboard() {
+function replayEventboardNearBottom(thresholdPx = 12): boolean {
+  const distanceToBottom =
+    replayEventboardEl.scrollHeight - (replayEventboardEl.scrollTop + replayEventboardEl.clientHeight);
+  return distanceToBottom <= thresholdPx;
+}
+
+function updateEventboard(force = false) {
   if (!replayData) {
     replayEventboardEl.innerHTML = "";
+    replayEventboardLastSignature = "";
+    replayEventboardManualScrollWhilePaused = false;
     return;
   }
-  const events = filteredReplayEvents().slice(-1500);
+  const previousScrollTop = replayEventboardEl.scrollTop;
+  const previousScrollHeight = replayEventboardEl.scrollHeight;
+  const events = visibleReplayEventsAt(replayCurrentTimeSec);
+  const filterKey = `${replayEventFilter.messages ? 1 : 0}${replayEventFilter.kills ? 1 : 0}${replayEventFilter.hits ? 1 : 0}${replayEventFilter.medical ? 1 : 0}`;
+  const first = events[0];
+  const last = events[events.length - 1];
+  const signature = `${replayData.replayName}|${filterKey}|${events.length}|${first ? `${first.frame}:${first.type}` : "none"}|${last ? `${last.frame}:${last.type}` : "none"}`;
+  if (!force && signature === replayEventboardLastSignature) return;
+  replayEventboardLastSignature = signature;
   replayEventboardEl.innerHTML = events
     .map((event) => {
       return (
         `<button class="ev-row" data-time="${event.timeSec}" data-frame="${event.frame}" type="button">` +
         `<span class="ev-time">${formatReplayTime(event.timeSec)}</span>` +
-        `<span class="ev-text">${describeReplayEvent(event)}</span>` +
+        `<span class="ev-text">${describeReplayEventHtml(event)}</span>` +
         `</button>`
       );
     })
     .join("");
+
+  replayEventboardProgrammaticScroll = true;
+  if (replayPlaying || !replayEventboardManualScrollWhilePaused) {
+    replayEventboardEl.scrollTop = replayEventboardEl.scrollHeight;
+  } else {
+    const growth = Math.max(0, replayEventboardEl.scrollHeight - previousScrollHeight);
+    replayEventboardEl.scrollTop = previousScrollTop + growth;
+  }
+  replayEventboardProgrammaticScroll = false;
 }
 
 function updateReplayPanels() {
@@ -1335,7 +1506,7 @@ replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
     clearReplayRuntime();
     updateReplayMeta();
     updateKillboard();
-    updateEventboard();
+    updateEventboard(true);
     updateReplayPanels();
     updateUrlReplayParams(replayData.replayName, replayData.archive);
     setReplayStatus(`Replay parsed (${replayData.source}). Matching map...`);
@@ -1379,18 +1550,15 @@ loaderWorker.onmessage = (event: MessageEvent<MapWorkerResponse>) => {
   }
 };
 
-function setMaps(files: File[]) {
-  mapFiles = files
-    .filter((file) => /\.(pbo|wrp)$/i.test(file.name))
-    .map((file, index) => {
-      const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
-      return {
-        id: `${index}:${relativePath}`,
-        mapName: extractMapName(file.name),
-        file,
-        relativePath,
-      };
-    })
+function setMapEntries(entries: Array<{ file: File; relativePath: string }>) {
+  mapFiles = entries
+    .filter((entry) => /\.(pbo|wrp)$/i.test(entry.file.name))
+    .map((entry, index) => ({
+      id: `${index}:${entry.relativePath}`,
+      mapName: extractMapName(entry.file.name),
+      file: entry.file,
+      relativePath: entry.relativePath,
+    }))
     .sort((a, b) => a.mapName.localeCompare(b.mapName));
 
   const mapSelect = document.getElementById("map-select") as HTMLSelectElement;
@@ -1438,6 +1606,71 @@ function setMaps(files: File[]) {
   }
 }
 
+function setMaps(files: File[]) {
+  const entries = files.map((file) => ({
+    file,
+    relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+  }));
+  setMapEntries(entries);
+}
+
+function updateReopenFolderButton(button: HTMLButtonElement) {
+  if (!supportsPersistentFolderAccess) {
+    button.style.display = "none";
+    return;
+  }
+  button.style.display = "";
+  button.disabled = !hasStoredMapFolderHandle;
+}
+
+async function openStoredMapFolder(requestPrompt: boolean) {
+  if (!supportsPersistentFolderAccess) return;
+  const handle = await loadStoredMapFolderHandle();
+  if (!handle) {
+    hasStoredMapFolderHandle = false;
+    setStatus("No previously selected folder is stored.");
+    return;
+  }
+
+  const granted = await ensureMapFolderPermission(handle, requestPrompt);
+  if (!granted) {
+    setStatus('Folder permission is not granted. Use "Reopen Last Folder" to grant access.');
+    return;
+  }
+
+  setStatus("Scanning folder for .pbo/.wrp map files...");
+  const entries = await collectMapEntriesFromDirectory(handle);
+  setMapEntries(entries);
+}
+
+async function pickFolderWithPersistentAccess() {
+  if (!supportsPersistentFolderAccess) return false;
+  const picker = (window as any).showDirectoryPicker as
+    | ((options?: { mode?: "read" | "readwrite"; id?: string }) => Promise<any>)
+    | undefined;
+  if (!picker) return false;
+
+  try {
+    const handle = await picker({ mode: "read", id: "arma3-map-folder" });
+    try {
+      await saveStoredMapFolderHandle(handle);
+      hasStoredMapFolderHandle = true;
+    } catch {
+      hasStoredMapFolderHandle = false;
+    }
+    setStatus("Scanning folder for .pbo/.wrp map files...");
+    const entries = await collectMapEntriesFromDirectory(handle);
+    setMapEntries(entries);
+    return true;
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return true;
+    }
+    setStatus(`Error picking folder: ${err instanceof Error ? err.message : String(err)}`);
+    return true;
+  }
+}
+
 async function loadMapFile(file: File, displayName: string) {
   if (isLoading) return;
   isLoading = true;
@@ -1464,13 +1697,27 @@ async function loadMapFile(file: File, displayName: string) {
 const mapSelect = document.getElementById("map-select") as HTMLSelectElement;
 const btnLoadMap = document.getElementById("btn-load-map") as HTMLButtonElement;
 const btnPickFolder = document.getElementById("btn-pick-folder") as HTMLButtonElement;
+const btnReopenFolder = document.getElementById("btn-reopen-folder") as HTMLButtonElement;
 const btnPickFiles = document.getElementById("btn-pick-files") as HTMLButtonElement;
 const folderInput = document.getElementById("folder-picker") as HTMLInputElement;
 const filesInput = document.getElementById("file-picker") as HTMLInputElement;
+updateReopenFolderButton(btnReopenFolder);
 
-btnPickFolder.addEventListener("click", () => {
+btnPickFolder.addEventListener("click", async () => {
+  if (supportsPersistentFolderAccess) {
+    const handled = await pickFolderWithPersistentAccess();
+    if (handled) {
+      updateReopenFolderButton(btnReopenFolder);
+      return;
+    }
+  }
   folderInput.value = "";
   folderInput.click();
+});
+
+btnReopenFolder.addEventListener("click", async () => {
+  await openStoredMapFolder(true);
+  updateReopenFolderButton(btnReopenFolder);
 });
 
 btnPickFiles.addEventListener("click", () => {
@@ -1487,6 +1734,26 @@ filesInput.addEventListener("change", () => {
   const files = Array.from(filesInput.files || []);
   setMaps(files);
 });
+
+void (async () => {
+  if (!supportsPersistentFolderAccess) return;
+  try {
+    const stored = await loadStoredMapFolderHandle();
+    hasStoredMapFolderHandle = Boolean(stored);
+    updateReopenFolderButton(btnReopenFolder);
+    if (!stored) return;
+    const granted = await ensureMapFolderPermission(stored, false);
+    if (!granted) {
+      setStatus('Found a previously selected folder. Click "Reopen Last Folder" to grant access.');
+      return;
+    }
+    setStatus("Restoring maps from previously selected folder...");
+    const entries = await collectMapEntriesFromDirectory(stored);
+    setMapEntries(entries);
+  } catch (err: unknown) {
+    setStatus(`Failed to restore previous folder: ${err instanceof Error ? err.message : String(err)}`);
+  }
+})();
 
 btnLoadMap.addEventListener("click", () => {
   const selected = mapFiles.find((entry) => entry.id === mapSelect.value);
@@ -1510,8 +1777,17 @@ btnLoadReplay.addEventListener("click", () => {
   loadSelectedReplay();
 });
 
+replayBoardKillsBtn.addEventListener("click", () => {
+  setReplayBoardTab("kills");
+});
+
+replayBoardEventsBtn.addEventListener("click", () => {
+  setReplayBoardTab("events");
+});
+
 replayPlayBtn.addEventListener("click", () => {
   if (!replayData) return;
+  replayEventboardManualScrollWhilePaused = false;
   replayPlaying = true;
   updateReplayPanels();
 });
@@ -1545,7 +1821,7 @@ for (const [el, key] of [
 ] as const) {
   el.addEventListener("change", () => {
     replayEventFilter[key] = el.checked;
-    updateEventboard();
+    updateEventboard(true);
   });
 }
 
@@ -1567,6 +1843,12 @@ replayEventboardEl.addEventListener("click", (event) => {
   replayPlaying = false;
   setReplayTime(time, replayPinKillsInput.checked);
   updateReplayPanels();
+});
+
+replayEventboardEl.addEventListener("scroll", () => {
+  if (replayEventboardProgrammaticScroll) return;
+  if (replayPlaying) return;
+  replayEventboardManualScrollWhilePaused = !replayEventboardNearBottom();
 });
 
 // --- Render Loop ---
@@ -1713,7 +1995,7 @@ function animate() {
 
   if (replayReady && replayData) {
     if (replayPlaying) {
-      const speed = Number(replaySpeedSelect.value) || 1;
+      const speed = (Number(replaySpeedSelect.value) || 1) * REPLAY_SPEED_MULTIPLIER;
       const next = replayCurrentTimeSec + dt * speed;
       const max = replayData.frameTimes[replayData.frameTimes.length - 1] || 0;
       setReplayTime(next, true);
