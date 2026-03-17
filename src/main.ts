@@ -1,31 +1,33 @@
 import * as THREE from "three";
 import { FlyCamera } from "./fly-camera";
 import { createTerrain, createWater, applySatelliteTexture, type TerrainData } from "./terrain";
-import { parseObjectsBinary, createObjects } from "./objects";
+import { createObjects } from "./objects";
 import { PlanMode, type MarkColor } from "./plan-mode";
+import type {
+  WorkerMapLoadedMessage,
+  WorkerProgressMessage,
+  WorkerResponse,
+  WorkerSatelliteReadyMessage,
+  WorkerTerrainData,
+  WorkerObjectsData,
+} from "./workers/types";
 
 // --- Three.js Setup ---
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
-renderer.setClearColor(0x87ceeb); // sky blue
+renderer.setClearColor(0x87ceeb);
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x87ceeb, 5000, 30000);
 
-const camera = new THREE.PerspectiveCamera(
-  70,
-  window.innerWidth / window.innerHeight,
-  1,
-  100000
-);
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 1, 100000);
 (window as any).__camera = camera;
 camera.position.set(0, 500, 0);
 
 const flyCamera = new FlyCamera(camera, renderer.domElement);
 
-// Lighting
 const ambientLight = new THREE.AmbientLight(0x606080, 1.5);
 scene.add(ambientLight);
 
@@ -33,15 +35,22 @@ const sunLight = new THREE.DirectionalLight(0xffeedd, 2.0);
 sunLight.position.set(1, 0.8, 0.6).normalize().multiplyScalar(10000);
 scene.add(sunLight);
 
-// Ground reference grid (shown before map is loaded)
 const gridHelper = new THREE.GridHelper(10000, 100, 0x444444, 0x333333);
 scene.add(gridHelper);
 
-// HUD
 const hudEl = document.getElementById("hud")!;
 const statusEl = document.getElementById("status")!;
 
-// Plan Mode
+function setStatus(text: string) {
+  statusEl.textContent = text;
+}
+
+// --- Worker ---
+const loaderWorker = new Worker(new URL("./workers/map-loader.worker.ts", import.meta.url), {
+  type: "module",
+});
+
+// --- Plan Mode ---
 const planMode = new PlanMode(scene, camera, renderer);
 (window as any).__planMode = planMode;
 const planToggle = document.getElementById("plan-toggle")!;
@@ -91,7 +100,6 @@ function updatePlanUI() {
     markListEl.appendChild(item);
   }
 
-  // Lines
   for (const line of planMode.lines) {
     const item = document.createElement("div");
     item.className = "mark-item";
@@ -104,7 +112,7 @@ function updatePlanUI() {
     const dist = Math.sqrt((e.x - s.x) ** 2 + (e.z - s.z) ** 2);
     const typeLabel = line.lineType === "straight" ? "Straight" : "Ground";
     label.textContent = `${typeLabel} (${dist.toFixed(0)}m)`;
-    label.title = `${s.x.toFixed(0)},${s.z.toFixed(0)} → ${e.x.toFixed(0)},${e.z.toFixed(0)}`;
+    label.title = `${s.x.toFixed(0)},${s.z.toFixed(0)} -> ${e.x.toFixed(0)},${e.z.toFixed(0)}`;
     item.appendChild(label);
 
     const delBtn = document.createElement("button");
@@ -139,7 +147,6 @@ function updatePlanStatus() {
 planMode.onMarksChanged = updatePlanUI;
 planMode.onPendingChanged = () => updatePlanStatus();
 
-// Enter to confirm pending mark
 markTextInput.addEventListener("keydown", (e) => {
   if (e.code === "Enter") {
     e.preventDefault();
@@ -180,253 +187,281 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Minimap
+// --- Minimap ---
 const minimapCanvas = document.getElementById("minimap") as HTMLCanvasElement;
 const minimapCtx = minimapCanvas.getContext("2d")!;
-let minimapImage: HTMLImageElement | null = null;
+let minimapImage: CanvasImageSource | null = null;
 let currentMapSize = 0;
 
-// --- Map Loading ---
+// --- Map State ---
 let currentTerrain: THREE.Group | null = null;
 let currentWater: THREE.Mesh | null = null;
 let currentObjects: THREE.Group | null = null;
+let currentMapName: string | null = null;
+let isLoading = false;
 
-async function loadMap(endpoint: string, filePath: string) {
-  statusEl.textContent = `Loading ${filePath}...`;
+const pendingAutoMap = new URLSearchParams(window.location.search).get("map")?.toLowerCase() ?? null;
+const legacyPboParam = new URLSearchParams(window.location.search).get("pbo");
+const legacyWrpParam = new URLSearchParams(window.location.search).get("wrp");
 
-  try {
-    // Request server to parse the file
-    const loadRes = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: filePath }),
-    });
+if (legacyPboParam || legacyWrpParam) {
+  setStatus("Legacy ?pbo= and ?wrp= links are not supported in static mode. Use ?map=<name> and pick a folder.");
+}
 
-    if (!loadRes.ok) {
-      const err = await loadRes.json();
-      statusEl.textContent = `Error: ${err.error}\n${err.entries ? "Files in PBO:\n" + err.entries.join("\n") : ""}`;
-      return;
-    }
+interface MapFileEntry {
+  id: string;
+  mapName: string;
+  file: File;
+  relativePath: string;
+}
 
-    const mapInfo = await loadRes.json();
-    statusEl.textContent = `Loaded: ${mapInfo.name}\n${JSON.stringify(mapInfo.info, null, 2)}`;
-    console.log("Map info:", mapInfo);
+let mapFiles: MapFileEntry[] = [];
 
-    // Fetch terrain elevation data
-    statusEl.textContent += "\nFetching terrain data...";
-    const terrainRes = await fetch(`/api/map/${mapInfo.name}/terrain`);
-    if (!terrainRes.ok) {
-      statusEl.textContent += "\nError fetching terrain data";
-      return;
-    }
+function extractMapName(name: string): string {
+  const file = name.split("/").pop()?.split("\\").pop() ?? name;
+  return file.replace(/\.(pbo|wrp)$/i, "");
+}
 
-    const gridWidth = parseInt(terrainRes.headers.get("X-Grid-Width")!);
-    const gridHeight = parseInt(terrainRes.headers.get("X-Grid-Height")!);
-    const cellSize = parseFloat(terrainRes.headers.get("X-Cell-Size")!);
-    const mapSize = parseFloat(terrainRes.headers.get("X-Map-Size")!);
-    const elevationMin = parseFloat(terrainRes.headers.get("X-Elevation-Min")!);
-    const elevationMax = parseFloat(terrainRes.headers.get("X-Elevation-Max")!);
+function updateUrlMapParam(mapName: string) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("map", mapName);
+  url.searchParams.delete("pbo");
+  url.searchParams.delete("wrp");
+  history.replaceState(null, "", url);
+}
 
-    const arrayBuf = await terrainRes.arrayBuffer();
-    const elevations = new Float32Array(arrayBuf);
+function clearCurrentMap() {
+  minimapImage = null;
+  if (currentTerrain) scene.remove(currentTerrain);
+  if (currentWater) scene.remove(currentWater);
+  if (currentObjects) scene.remove(currentObjects);
+  scene.remove(gridHelper);
+}
 
-    const terrainData: TerrainData = {
-      gridWidth,
-      gridHeight,
-      cellSize,
-      mapSize,
-      elevationMin,
-      elevationMax,
-      elevations,
-    };
+function applyLoadedMap(
+  mapName: string,
+  terrainData: WorkerTerrainData,
+  objectsData: WorkerObjectsData,
+  satelliteTiles: number
+) {
+  clearCurrentMap();
 
-    statusEl.textContent += `\nTerrain: ${gridWidth}x${gridHeight}, cell ${cellSize}m`;
-    statusEl.textContent += `\nElevation: ${elevationMin.toFixed(1)} to ${elevationMax.toFixed(1)}m`;
-    statusEl.textContent += "\nBuilding mesh...";
+  const terrainInput: TerrainData = {
+    gridWidth: terrainData.gridWidth,
+    gridHeight: terrainData.gridHeight,
+    cellSize: terrainData.cellSize,
+    mapSize: terrainData.mapSize,
+    elevationMin: terrainData.elevationMin,
+    elevationMax: terrainData.elevationMax,
+    elevations: terrainData.elevations,
+  };
 
-    // Remove old terrain
-    if (currentTerrain) scene.remove(currentTerrain);
-    if (currentWater) scene.remove(currentWater);
-    if (currentObjects) scene.remove(currentObjects);
-    scene.remove(gridHelper);
+  currentTerrain = createTerrain(terrainInput);
+  scene.add(currentTerrain);
+  planMode.setTerrain(currentTerrain);
 
-    // Create terrain mesh
-    currentTerrain = createTerrain(terrainData);
-    scene.add(currentTerrain);
-    planMode.setTerrain(currentTerrain);
+  currentWater = createWater(terrainData.mapSize);
+  scene.add(currentWater);
+  currentMapSize = terrainData.mapSize;
 
-    // Create water plane
-    currentWater = createWater(mapSize);
-    scene.add(currentWater);
-    currentMapSize = mapSize;
+  const terrainInfoData = {
+    elevations: terrainData.elevations,
+    gridWidth: terrainData.gridWidth,
+    gridHeight: terrainData.gridHeight,
+    cellSize: terrainData.cellSize,
+    mapSize: terrainData.mapSize,
+  };
+  flyCamera.terrain = terrainInfoData;
+  planMode.setTerrainInfo(terrainInfoData);
 
-    // Set terrain data for camera height clamping and line drawing
-    const terrainInfoData = { elevations, gridWidth, gridHeight, cellSize, mapSize };
-    flyCamera.terrain = terrainInfoData;
-    planMode.setTerrainInfo(terrainInfoData);
+  const centerX = terrainData.mapSize / 2;
+  const centerZ = terrainData.mapSize / 2;
+  const centerIdx =
+    Math.floor(terrainData.gridHeight / 2) * terrainData.gridWidth + Math.floor(terrainData.gridWidth / 2);
+  const centerElev = terrainData.elevations[centerIdx] || 100;
+  camera.position.set(centerX, centerElev + 500, centerZ);
 
-    // Position camera at center of map, above terrain
-    const centerX = mapSize / 2;
-    const centerZ = mapSize / 2;
-    const centerIdx =
-      Math.floor(gridHeight / 2) * gridWidth + Math.floor(gridWidth / 2);
-    const centerElev = elevations[centerIdx] || 100;
-    camera.position.set(centerX, centerElev + 500, centerZ);
+  currentObjects = createObjects(objectsData);
+  scene.add(currentObjects);
 
-    // Fetch satellite texture
-    if (mapInfo.satelliteTiles > 0) {
-      statusEl.textContent += "\nFetching satellite texture...";
-      try {
-        const loader = new THREE.TextureLoader();
-        const satTexture = await new Promise<THREE.Texture>((resolve, reject) => {
-          loader.load(
-            `/api/map/${mapInfo.name}/satellite?size=4096`,
-            resolve,
-            undefined,
-            reject,
-          );
-        });
-        applySatelliteTexture(currentTerrain!, satTexture);
-        statusEl.textContent += "\nSatellite texture applied!";
+  currentMapName = mapName;
+  minimapCanvas.style.display = "block";
+  updateUrlMapParam(mapName);
 
-        // Load satellite into minimap (reuse same cached image)
-        const mmImg = new Image();
-        mmImg.src = `/api/map/${mapInfo.name}/satellite?size=4096`;
-        mmImg.onload = () => {
-          minimapImage = mmImg;
-          minimapCanvas.style.display = "block";
-        };
-      } catch (satErr: any) {
-        console.error("Satellite texture error:", satErr);
-        statusEl.textContent += `\nSatellite: ${satErr.message || "failed"}`;
-      }
-    }
+  setStatus(
+    [
+      `Loaded ${mapName}`,
+      `Terrain: ${terrainData.gridWidth}x${terrainData.gridHeight}, cell ${terrainData.cellSize.toFixed(2)}m`,
+      `Elevation: ${terrainData.elevationMin.toFixed(1)} to ${terrainData.elevationMax.toFixed(1)}m`,
+      `Objects: ${objectsData.nObjects}`,
+      satelliteTiles > 0
+        ? `Satellite tiles: ${satelliteTiles} (generating texture...)`
+        : "No satellite tiles in this map",
+    ].join("\n")
+  );
+}
 
-    // Fetch and render placed objects
-    statusEl.textContent += "\nFetching objects...";
-    try {
-      const objRes = await fetch(`/api/map/${mapInfo.name}/objects-bin`);
-      if (objRes.ok) {
-        const objBuf = await objRes.arrayBuffer();
-        const objData = parseObjectsBinary(objBuf);
-        statusEl.textContent += `\nPlacing ${objData.nObjects} objects...`;
-        currentObjects = createObjects(objData);
-        scene.add(currentObjects);
-        statusEl.textContent += `\n${objData.nObjects} objects placed.`;
-      }
-    } catch (objErr: any) {
-      console.error("Error loading objects:", objErr);
-      statusEl.textContent += `\nObjects error: ${objErr.message}`;
-    }
+function handleWorkerProgress(msg: WorkerProgressMessage) {
+  const progressText =
+    typeof msg.completed === "number" && typeof msg.total === "number"
+      ? ` (${msg.completed}/${msg.total})`
+      : "";
+  setStatus(`Loading ${msg.mapName}: ${msg.stage}${progressText}${msg.detail ? `\n${msg.detail}` : ""}`);
+}
 
-    // Show minimap even without satellite texture (green fallback)
-    if (!minimapImage) {
-      minimapCanvas.style.display = "block";
-    }
+function handleSatelliteReady(msg: WorkerSatelliteReadyMessage) {
+  if (!currentTerrain || !currentMapName || msg.mapName !== currentMapName) return;
 
-    statusEl.textContent += "\nDone! Click viewport to fly.";
-  } catch (err: any) {
-    statusEl.textContent = `Error: ${err.message}`;
-    console.error(err);
+  const rgba = new Uint8ClampedArray(msg.rgba);
+  const canvas = document.createElement("canvas");
+  canvas.width = msg.width;
+  canvas.height = msg.height;
+  const ctx = canvas.getContext("2d")!;
+  ctx.putImageData(new ImageData(rgba, msg.width, msg.height), 0, 0);
+
+  minimapImage = canvas;
+
+  const texture = new THREE.CanvasTexture(canvas);
+  applySatelliteTexture(currentTerrain, texture);
+
+  setStatus(`${statusEl.textContent}\nSatellite texture applied (${msg.width}x${msg.height}).`);
+}
+
+loaderWorker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+  const msg = event.data;
+
+  if (msg.type === "progress") {
+    handleWorkerProgress(msg);
+    return;
   }
-}
 
-// --- UI Bindings ---
-document.getElementById("btn-load-pbo")!.addEventListener("click", () => {
-  const filePath = (document.getElementById("file-path") as HTMLInputElement).value.trim();
-  if (filePath) loadMap("/api/load-pbo", filePath);
-});
+  if (msg.type === "error") {
+    isLoading = false;
+    setStatus(`Error: ${msg.message}`);
+    return;
+  }
 
-document.getElementById("btn-load-wrp")!.addEventListener("click", () => {
-  const filePath = (document.getElementById("file-path") as HTMLInputElement).value.trim();
-  if (filePath) loadMap("/api/load-wrp", filePath);
-});
+  if (msg.type === "map_loaded") {
+    const data = msg as WorkerMapLoadedMessage;
+    isLoading = false;
+    applyLoadedMap(data.map.name, data.terrain, data.objects, data.map.satelliteTiles);
+    if (data.map.satelliteTiles > 0) {
+      loaderWorker.postMessage({
+        type: "generate_satellite",
+        mapName: data.map.name,
+        size: 4096,
+      });
+    }
+    return;
+  }
 
-// --- Maps folder scan + dropdown ---
-const mapsFolderInput = document.getElementById("maps-folder") as HTMLInputElement;
-const mapSelect = document.getElementById("map-select") as HTMLSelectElement;
-const btnLoadMap = document.getElementById("btn-load-map") as HTMLButtonElement;
-let scannedFiles: string[] = [];
+  if (msg.type === "satellite_ready") {
+    handleSatelliteReady(msg);
+  }
+};
 
-// Restore saved folder from localStorage
-const savedFolder = localStorage.getItem("arma3-maps-folder");
-if (savedFolder) mapsFolderInput.value = savedFolder;
+function setMaps(files: File[]) {
+  mapFiles = files
+    .filter((file) => /\.(pbo|wrp)$/i.test(file.name))
+    .map((file, index) => {
+      const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+      return {
+        id: `${index}:${relativePath}`,
+        mapName: extractMapName(file.name),
+        file,
+        relativePath,
+      };
+    })
+    .sort((a, b) => a.mapName.localeCompare(b.mapName));
 
-function extractMapName(filePath: string): string {
-  const basename = filePath.split("/").pop()?.split("\\").pop() || filePath;
-  return basename.replace(/\.(pbo|wrp)$/i, "");
-}
+  const mapSelect = document.getElementById("map-select") as HTMLSelectElement;
+  const btnLoadMap = document.getElementById("btn-load-map") as HTMLButtonElement;
 
-function populateDropdown(files: string[]) {
-  scannedFiles = files;
   mapSelect.innerHTML = "";
-  if (files.length === 0) {
+  if (mapFiles.length === 0) {
     mapSelect.innerHTML = '<option value="">-- no maps found --</option>';
     mapSelect.disabled = true;
     btnLoadMap.disabled = true;
+    setStatus("No .pbo/.wrp files found in the selected files.");
     return;
   }
-  for (const f of files) {
+
+  for (const entry of mapFiles) {
     const opt = document.createElement("option");
-    opt.value = f;
-    opt.textContent = extractMapName(f);
+    opt.value = entry.id;
+    opt.textContent = entry.mapName;
+    opt.title = entry.relativePath;
     mapSelect.appendChild(opt);
   }
+
   mapSelect.disabled = false;
   btnLoadMap.disabled = false;
-}
 
-async function scanFolder() {
-  const dirPath = mapsFolderInput.value.trim();
-  if (!dirPath) return;
-
-  localStorage.setItem("arma3-maps-folder", dirPath);
-  statusEl.textContent = `Scanning ${dirPath}...`;
-
-  try {
-    const res = await fetch("/api/scan-directory", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: dirPath }),
-    });
-    const data = await res.json();
-    if (data.files?.length) {
-      populateDropdown(data.files);
-      statusEl.textContent = `Found ${data.files.length} maps.`;
-    } else {
-      populateDropdown([]);
-      statusEl.textContent = "No PBO/WRP files found.";
+  const autoTarget = pendingAutoMap;
+  if (autoTarget) {
+    const matched = mapFiles.find((entry) => entry.mapName.toLowerCase() === autoTarget);
+    if (matched) {
+      mapSelect.value = matched.id;
+      void loadMapFile(matched.file, matched.relativePath);
+      return;
     }
-  } catch (err: any) {
-    statusEl.textContent = `Scan error: ${err.message}`;
+    setStatus(`Found ${mapFiles.length} maps. Auto-load target "${autoTarget}" not found.`);
+    return;
   }
+
+  setStatus(`Found ${mapFiles.length} maps. Select one and click Load Map.`);
 }
 
-document.getElementById("btn-scan")!.addEventListener("click", scanFolder);
+async function loadMapFile(file: File, displayName: string) {
+  if (isLoading) return;
+  isLoading = true;
 
-btnLoadMap.addEventListener("click", () => {
-  const filePath = mapSelect.value;
-  if (!filePath) return;
-  const isPbo = filePath.toLowerCase().endsWith(".pbo");
-  loadMap(isPbo ? "/api/load-pbo" : "/api/load-wrp", filePath);
+  setStatus(`Reading ${displayName}...`);
+  const buffer = await file.arrayBuffer();
+
+  loaderWorker.postMessage(
+    {
+      type: "load_map",
+      fileName: displayName,
+      fileBytes: buffer,
+    },
+    [buffer]
+  );
+}
+
+// --- UI Bindings ---
+const mapSelect = document.getElementById("map-select") as HTMLSelectElement;
+const btnLoadMap = document.getElementById("btn-load-map") as HTMLButtonElement;
+const btnPickFolder = document.getElementById("btn-pick-folder") as HTMLButtonElement;
+const btnPickFiles = document.getElementById("btn-pick-files") as HTMLButtonElement;
+const folderInput = document.getElementById("folder-picker") as HTMLInputElement;
+const filesInput = document.getElementById("file-picker") as HTMLInputElement;
+
+btnPickFolder.addEventListener("click", () => {
+  folderInput.value = "";
+  folderInput.click();
 });
 
-// Auto-scan on load if folder was saved
-if (savedFolder) scanFolder();
+btnPickFiles.addEventListener("click", () => {
+  filesInput.value = "";
+  filesInput.click();
+});
 
-// --- Auto-load from URL params ---
-// Usage: http://localhost:5173/?pbo=/path/to/map.pbo
-//    or: http://localhost:5173/?wrp=/path/to/map.wrp
-const params = new URLSearchParams(window.location.search);
-const autoPbo = params.get("pbo");
-const autoWrp = params.get("wrp");
-if (autoPbo) {
-  (document.getElementById("file-path") as HTMLInputElement).value = autoPbo;
-  loadMap("/api/load-pbo", autoPbo);
-} else if (autoWrp) {
-  (document.getElementById("file-path") as HTMLInputElement).value = autoWrp;
-  loadMap("/api/load-wrp", autoWrp);
-}
+folderInput.addEventListener("change", () => {
+  const files = Array.from(folderInput.files || []);
+  setMaps(files);
+});
+
+filesInput.addEventListener("change", () => {
+  const files = Array.from(filesInput.files || []);
+  setMaps(files);
+});
+
+btnLoadMap.addEventListener("click", () => {
+  const selected = mapFiles.find((entry) => entry.id === mapSelect.value);
+  if (!selected) return;
+  void loadMapFile(selected.file, selected.relativePath);
+});
 
 // --- Render Loop ---
 const clock = new THREE.Clock();
@@ -441,40 +476,24 @@ function updateMinimap() {
     minimapCtx.fillRect(0, 0, size, size);
   }
 
-  // Camera position as fraction of map
   const px = Math.max(0, Math.min(1, camera.position.x / currentMapSize));
   const pz = Math.max(0, Math.min(1, camera.position.z / currentMapSize));
-  // Three.js flipY=true means v=0 maps to image bottom, so on the terrain
-  // z=0 (north) shows the bottom of the satellite image (tile row max).
-  // The minimap draws the image normally (row 0 = top). To match the terrain,
-  // we flip the Z axis on the minimap so camera z=0 maps to the bottom.
   const mx = px * size;
   const my = (1 - pz) * size;
 
-  // Camera direction (projected onto XZ plane)
-  // Minimap Y is flipped (1-pz), so world +Z = minimap down.
-  // atan2(dx, dz) gives angle from +Z axis; cone draws with sin/cos where -cos = up.
   const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
   const angle = Math.atan2(dir.x, dir.z);
 
-  // Draw view cone
   const coneLen = 25;
   const coneSpread = 0.5;
   minimapCtx.beginPath();
   minimapCtx.moveTo(mx, my);
-  minimapCtx.lineTo(
-    mx + Math.sin(angle - coneSpread) * coneLen,
-    my - Math.cos(angle - coneSpread) * coneLen,
-  );
-  minimapCtx.lineTo(
-    mx + Math.sin(angle + coneSpread) * coneLen,
-    my - Math.cos(angle + coneSpread) * coneLen,
-  );
+  minimapCtx.lineTo(mx + Math.sin(angle - coneSpread) * coneLen, my - Math.cos(angle - coneSpread) * coneLen);
+  minimapCtx.lineTo(mx + Math.sin(angle + coneSpread) * coneLen, my - Math.cos(angle + coneSpread) * coneLen);
   minimapCtx.closePath();
   minimapCtx.fillStyle = "rgba(255,255,255,0.2)";
   minimapCtx.fill();
 
-  // Draw direction line
   const lineLen = 15;
   minimapCtx.beginPath();
   minimapCtx.moveTo(mx, my);
@@ -483,7 +502,6 @@ function updateMinimap() {
   minimapCtx.lineWidth = 2;
   minimapCtx.stroke();
 
-  // Draw player dot
   minimapCtx.beginPath();
   minimapCtx.arc(mx, my, 4, 0, Math.PI * 2);
   minimapCtx.fillStyle = "#ff3333";
@@ -492,12 +510,10 @@ function updateMinimap() {
   minimapCtx.lineWidth = 1.5;
   minimapCtx.stroke();
 
-  // Draw plan marks on minimap
   for (const mark of planMode.marks) {
     const markPx = (mark.worldPos.x / currentMapSize) * size;
     const markPy = (1 - mark.worldPos.z / currentMapSize) * size;
 
-    // Diamond shape
     minimapCtx.beginPath();
     minimapCtx.moveTo(markPx, markPy - 5);
     minimapCtx.lineTo(markPx + 4, markPy);
@@ -510,14 +526,12 @@ function updateMinimap() {
     minimapCtx.lineWidth = 1;
     minimapCtx.stroke();
 
-    // Label
     minimapCtx.font = "bold 9px monospace";
     minimapCtx.fillStyle = "#fff";
     minimapCtx.textAlign = "center";
     minimapCtx.fillText(mark.text, markPx, markPy - 8);
   }
 
-  // Draw plan lines on minimap
   for (const line of planMode.lines) {
     const sx = (line.start.x / currentMapSize) * size;
     const sy = (1 - line.start.z / currentMapSize) * size;
@@ -533,7 +547,6 @@ function updateMinimap() {
   }
 }
 
-// Click on minimap to teleport
 minimapCanvas.addEventListener("click", (e) => {
   if (!currentMapSize) return;
   const rect = minimapCanvas.getBoundingClientRect();
@@ -545,12 +558,9 @@ minimapCanvas.addEventListener("click", (e) => {
 
   const worldX = (cx / size) * currentMapSize;
   const worldZ = (1 - cy / size) * currentMapSize;
-
-  // Keep current height
   camera.position.set(worldX, camera.position.y, worldZ);
 });
 
-// Prevent pointer lock when clicking minimap or plan panel
 minimapCanvas.addEventListener("mousedown", (e) => {
   e.stopPropagation();
 });
@@ -572,9 +582,10 @@ function animate() {
 
 animate();
 
-// Handle resize
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+setStatus("Pick a folder with map files (or pick files) to start.");

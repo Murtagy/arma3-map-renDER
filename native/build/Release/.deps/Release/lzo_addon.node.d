@@ -1,1 +1,0 @@
-cmd_Release/lzo_addon.node := c++ -bundle -undefined dynamic_lookup -Wl,-search_paths_first -mmacosx-version-min=11.0 -arch arm64 -L./Release -stdlib=libc++ -L/usr/local/opt/openssl@3/lib -o Release/lzo_addon.node Release/obj.target/lzo_addon/lzo_addon.o Release/obj.target/lzo_addon/minilzo.o 

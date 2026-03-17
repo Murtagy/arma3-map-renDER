@@ -17,19 +17,10 @@
         padding: 12px;
         border-radius: 6px;
         font-size: 13px;
-        max-width: 400px;
+        max-width: 420px;
       }
       #ui h1 { font-size: 16px; margin-bottom: 8px; color: #7fdbca; }
       #ui label { display: block; margin: 6px 0 2px; color: #aaa; }
-      #ui input[type="text"] {
-        width: 100%;
-        padding: 4px 8px;
-        background: #222;
-        border: 1px solid #444;
-        color: #eee;
-        border-radius: 3px;
-        font-family: monospace;
-      }
       #ui button {
         margin: 4px 4px 4px 0;
         padding: 4px 12px;
@@ -41,6 +32,7 @@
         font-family: monospace;
       }
       #ui button:hover { background: #5a7a9b; }
+      #ui button:disabled { background: #2a3443; color: #777; cursor: default; }
       #status { margin-top: 8px; color: #888; font-size: 12px; white-space: pre-wrap; }
       #hud {
         position: absolute;
@@ -77,7 +69,7 @@
       #plan-panel {
         position: absolute;
         top: 10px;
-        left: 420px;
+        left: 440px;
         z-index: 100;
         background: rgba(0,0,0,0.85);
         padding: 12px;
@@ -157,7 +149,7 @@
       #plan-toggle {
         position: absolute;
         top: 10px;
-        left: 370px;
+        left: 390px;
         z-index: 101;
         padding: 6px 10px;
         background: #3a506b;
@@ -170,34 +162,48 @@
       }
       #plan-toggle:hover { background: #5a7a9b; }
       #plan-toggle.active { background: #a33; }
+      .row { display: flex; gap: 4px; flex-wrap: wrap; }
+      #map-select {
+        width: 100%;
+        padding: 4px 8px;
+        background: #222;
+        border: 1px solid #444;
+        color: #eee;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 12px;
+      }
+      .hint {
+        margin-top: 4px;
+        color: #666;
+        font-size: 11px;
+      }
     </style>
-    <script type="module" crossorigin src="/assets/index-Bbv2cSHy.js"></script>
+    <script type="module" crossorigin src="/assets/index-DwUijlrR.js"></script>
   </head>
   <body>
     <div id="ui">
       <h1>Arma 3 Map Viewer</h1>
-      <label>Maps folder:</label>
-      <div style="display:flex; gap:4px;">
-        <input type="text" id="maps-folder" placeholder="/path/to/Arma 3 maps/" style="flex:1;" />
-        <button id="btn-scan">Scan</button>
+      <div class="row">
+        <button id="btn-pick-folder">Pick Folder</button>
+        <button id="btn-pick-files">Pick File(s)</button>
       </div>
+      <input id="folder-picker" type="file" webkitdirectory directory multiple style="display:none" />
+      <input id="file-picker" type="file" accept=".pbo,.wrp" multiple style="display:none" />
+
       <label>Map:</label>
-      <select id="map-select" disabled style="width:100%; padding:4px 8px; background:#222; border:1px solid #444; color:#eee; border-radius:3px; font-family:monospace; font-size:12px;">
-        <option value="">-- scan a folder first --</option>
+      <select id="map-select" disabled>
+        <option value="">-- pick folder/files first --</option>
       </select>
-      <div style="margin-top:6px;">
+
+      <div class="row" style="margin-top:6px;">
         <button id="btn-load-map" disabled>Load Map</button>
       </div>
-      <details style="margin-top:6px;">
-        <summary style="color:#666; font-size:11px; cursor:pointer;">Manual path</summary>
-        <input type="text" id="file-path" placeholder="/path/to/map.pbo or .wrp" style="margin-top:4px;" />
-        <div>
-          <button id="btn-load-pbo">Load PBO</button>
-          <button id="btn-load-wrp">Load WRP</button>
-        </div>
-      </details>
-      <div id="status">Ready. Set maps folder and scan.</div>
+
+      <div class="hint">Tip: use <code>?map=map_name</code> in URL to auto-load after folder pick.</div>
+      <div id="status">Pick a folder with map files (or pick files) to start.</div>
     </div>
+
     <button id="plan-toggle" title="Toggle Plan Mode (P)">Plan</button>
     <div id="plan-panel">
       <h2>Commander Plan</h2>
@@ -218,6 +224,7 @@
       </div>
       <div id="plan-mark-list"></div>
     </div>
+
     <div id="hud"></div>
     <canvas id="minimap" width="250" height="250"></canvas>
     <div id="controls-help">
