@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { FlyCamera } from "./fly-camera";
 import { createTerrain, createWater, applySatelliteTexture, type TerrainData } from "./terrain";
 import { createObjects } from "./objects";
-import { mapToWorldX, worldToMapX } from "./map-coords";
+import { mapDirDegToWorldYawRad, mapToWorldX, worldToMapX } from "./map-coords";
 import { PlanMode, type MarkColor } from "./plan-mode";
 import type {
   MapWorkerResponse,
@@ -654,7 +654,14 @@ function ensureReplayVisual(id: number): RuntimeUnitVisual | null {
   const existing = replayVisuals.get(id);
   if (existing) return existing;
 
-  const geometry = new THREE.SphereGeometry(8, 10, 10);
+  const isMan = unit.unitType === "man";
+  const geometry = isMan
+    ? (() => {
+        const g = new THREE.ConeGeometry(4, 20, 3);
+        g.rotateX(Math.PI / 2); // point along +Z so yaw=0 is north
+        return g;
+      })()
+    : new THREE.SphereGeometry(8, 10, 10);
   const material = new THREE.MeshLambertMaterial({
     color: sideColor(unit.side),
     transparent: true,
@@ -698,7 +705,7 @@ function resolveInterpolatedState(state: RuntimeUnitState, nowSec: number) {
   };
 }
 
-function resolveReplayWorldPosition(id: number, nowSec: number): { x: number; y: number; z: number } | null {
+function resolveReplayWorldPosition(id: number, nowSec: number): { x: number; y: number; z: number; dirDeg: number } | null {
   const state = replayRuntimeStates.get(id);
   const unit = replayUnitsById.get(id);
   if (!state || !unit) return null;
@@ -707,6 +714,7 @@ function resolveReplayWorldPosition(id: number, nowSec: number): { x: number; y:
   let mapX = base.x;
   let mapZ = base.y;
   let alt = base.z;
+  let dir = base.dir;
 
   if (unit.unitType === "man" && state.vehicleRef > 0) {
     const vehicleState = replayRuntimeStates.get(state.vehicleRef);
@@ -715,6 +723,7 @@ function resolveReplayWorldPosition(id: number, nowSec: number): { x: number; y:
       mapX = vehicleBase.x;
       mapZ = vehicleBase.y;
       alt = vehicleBase.z;
+      dir = vehicleBase.dir;
     }
   }
 
@@ -724,6 +733,7 @@ function resolveReplayWorldPosition(id: number, nowSec: number): { x: number; y:
     x: worldX,
     y: terrainY + Math.max(alt, 0) + 3,
     z: mapZ,
+    dirDeg: dir,
   };
 }
 
@@ -746,7 +756,9 @@ function updateReplayVisuals(nowSec: number) {
     const dead = stateIsDead(unit.unitType, state.stateFlag);
     const unconscious = stateIsUnconscious(unit.unitType, state.stateFlag);
     visual.mesh.visible = true;
-    visual.mesh.position.set(worldPos.x, worldPos.y, worldPos.z);
+    const meshY = unit.unitType === "man" ? worldPos.y + 5 : worldPos.y;
+    visual.mesh.position.set(worldPos.x, meshY, worldPos.z);
+    visual.mesh.rotation.set(0, mapDirDegToWorldYawRad(worldPos.dirDeg), 0);
     visual.labelEl.textContent = visual.name || `#${id}`;
 
     const material = visual.mesh.material as THREE.MeshLambertMaterial;
