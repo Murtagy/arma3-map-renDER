@@ -8,18 +8,57 @@
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body { background: #1a1a2e; color: #eee; font-family: monospace; overflow: hidden; }
       canvas { display: block; }
-      #ui {
+      #ui-shell {
         position: absolute;
         top: 10px;
         left: 10px;
         z-index: 100;
+        width: min(420px, calc(100vw - 20px));
+      }
+      #ui-shell summary {
+        list-style: none;
+        cursor: pointer;
+        color: #7fdbca;
+        background: rgba(0,0,0,0.82);
+        border: 1px solid rgba(127,219,202,0.2);
+        border-radius: 6px;
+        padding: 6px 10px;
+        font-size: 12px;
+        user-select: none;
+        margin-bottom: 6px;
+      }
+      #ui-shell summary::-webkit-details-marker { display: none; }
+      #ui-shell summary::before { content: "▾ "; }
+      #ui-shell:not([open]) summary::before { content: "▸ "; }
+      #ui {
         background: rgba(0,0,0,0.8);
         padding: 12px;
         border-radius: 6px;
         font-size: 13px;
-        max-width: 420px;
+        border: 1px solid rgba(127,219,202,0.2);
       }
       #ui h1 { font-size: 16px; margin-bottom: 8px; color: #7fdbca; }
+      #ui details {
+        border: 1px solid rgba(127,219,202,0.2);
+        border-radius: 4px;
+        padding: 4px 6px 6px;
+        margin-bottom: 8px;
+        background: rgba(255,255,255,0.02);
+      }
+      #ui summary {
+        cursor: pointer;
+        color: #7fdbca;
+        font-size: 12px;
+        list-style: none;
+      }
+      #ui summary::-webkit-details-marker { display: none; }
+      #ui summary::before {
+        content: "▾ ";
+        color: #7fdbca;
+      }
+      #ui details:not([open]) summary::before {
+        content: "▸ ";
+      }
       #ui label { display: block; margin: 6px 0 2px; color: #aaa; }
       #ui button {
         margin: 4px 4px 4px 0;
@@ -173,6 +212,167 @@
         font-family: monospace;
         font-size: 12px;
       }
+      #replay-select, #replay-server-filter, #replay-speed, #replay-proxy {
+        width: 100%;
+        padding: 4px 8px;
+        background: #222;
+        border: 1px solid #444;
+        color: #eee;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 12px;
+      }
+      .section-title {
+        margin-top: 10px;
+        margin-bottom: 2px;
+        color: #7fdbca;
+      }
+      #replay-status {
+        margin-top: 6px;
+        color: #9ba9b5;
+        font-size: 11px;
+        white-space: pre-wrap;
+      }
+      #replay-panel {
+        position: absolute;
+        top: 270px;
+        right: 10px;
+        z-index: 100;
+        width: 420px;
+        max-height: calc(100vh - 290px);
+        overflow: auto;
+        background: rgba(0,0,0,0.82);
+        border-radius: 6px;
+        border: 1px solid rgba(127, 219, 202, 0.35);
+        padding: 10px;
+        display: none;
+      }
+      #replay-panel h2 {
+        font-size: 14px;
+        color: #7fdbca;
+        margin-bottom: 4px;
+      }
+      #replay-panel details {
+        border: 1px solid rgba(127,219,202,0.15);
+        border-radius: 4px;
+        padding: 4px;
+        margin-top: 6px;
+      }
+      #replay-panel summary {
+        cursor: pointer;
+        color: #7fdbca;
+        font-size: 12px;
+        list-style: none;
+      }
+      #replay-panel summary::-webkit-details-marker { display: none; }
+      #replay-panel summary::before { content: "▾ "; }
+      #replay-panel details:not([open]) summary::before { content: "▸ "; }
+      #replay-meta {
+        white-space: pre-wrap;
+        color: #a3acb2;
+        font-size: 11px;
+        margin-bottom: 8px;
+      }
+      #replay-time {
+        color: #ddd;
+        font-size: 12px;
+        margin-left: auto;
+      }
+      #replay-seek {
+        width: 100%;
+        margin: 6px 0 8px;
+      }
+      .replay-filter-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        color: #bbb;
+        font-size: 11px;
+        margin-bottom: 8px;
+      }
+      .replay-board-title {
+        font-size: 12px;
+        color: #7fdbca;
+        margin-bottom: 3px;
+      }
+      #replay-killboard, #replay-eventboard {
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 4px;
+        padding: 4px;
+      }
+      #replay-killboard {
+        max-height: 180px;
+        overflow: auto;
+        margin-bottom: 8px;
+      }
+      #replay-eventboard {
+        max-height: 240px;
+        overflow: auto;
+      }
+      .kb-row, .ev-row {
+        width: 100%;
+        border: none;
+        background: rgba(255,255,255,0.04);
+        color: #ddd;
+        cursor: pointer;
+        font-family: monospace;
+        font-size: 11px;
+        border-radius: 3px;
+        margin-bottom: 3px;
+        padding: 4px 6px;
+        text-align: left;
+      }
+      .kb-row:hover, .ev-row:hover {
+        background: rgba(127,219,202,0.16);
+      }
+      .kb-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .kb-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        margin-right: 8px;
+      }
+      .kb-stats {
+        color: #a8b2bb;
+      }
+      .ev-row {
+        display: grid;
+        grid-template-columns: 74px 1fr;
+        gap: 6px;
+      }
+      .ev-time {
+        color: #7fdbca;
+      }
+      .unit-side-west { color: #6db8ff; }
+      .unit-side-east { color: #ff7373; }
+      .unit-side-guer { color: #7de28c; }
+      .unit-side-civ { color: #ca92ff; }
+      .unit-side-unknown { color: #ccc; }
+      #replay-label-layer {
+        position: absolute;
+        inset: 0;
+        z-index: 92;
+        pointer-events: none;
+      }
+      .replay-label {
+        position: absolute;
+        transform: translate(-50%, -100%);
+        font-size: 8px;
+        line-height: 1;
+        padding: 1px 3px;
+        border-radius: 3px;
+        background: rgba(0,0,0,0.55);
+        text-shadow: 0 1px 1px rgba(0,0,0,0.65);
+        white-space: nowrap;
+        max-width: 180px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .hint {
         margin-top: 4px;
         color: #666;
@@ -181,27 +381,56 @@
     </style>
   </head>
   <body>
-    <div id="ui">
-      <h1>Arma 3 Map Viewer</h1>
-      <div class="row">
-        <button id="btn-pick-folder">Pick Folder</button>
-        <button id="btn-pick-files">Pick File(s)</button>
+    <details id="ui-shell" open>
+      <summary>Map Viewer Controls</summary>
+      <div id="ui">
+        <h1>Arma 3 Map Viewer</h1>
+        <details id="map-controls" open>
+          <summary>Map Selection</summary>
+          <div class="row" style="margin-top:6px;">
+            <button id="btn-pick-folder">Pick Folder</button>
+            <button id="btn-pick-files">Pick File(s)</button>
+          </div>
+          <input id="folder-picker" type="file" webkitdirectory directory multiple style="display:none" />
+          <input id="file-picker" type="file" accept=".pbo,.wrp" multiple style="display:none" />
+
+          <label>Map:</label>
+          <select id="map-select" disabled>
+            <option value="">-- pick folder/files first --</option>
+          </select>
+
+          <div class="row" style="margin-top:6px;">
+            <button id="btn-load-map" disabled>Load Map</button>
+          </div>
+        </details>
+
+        <details id="replay-controls" open>
+          <summary>Replay Selection</summary>
+          <div class="row" style="margin-top:6px;">
+            <button id="btn-fetch-replays">Fetch Replays</button>
+          </div>
+          <label>Server:</label>
+          <select id="replay-server-filter">
+            <option value="all">All</option>
+          </select>
+          <label>Replay:</label>
+          <select id="replay-select" disabled>
+            <option value="">-- fetch replays first --</option>
+          </select>
+          <div class="row" style="margin-top:6px;">
+            <button id="btn-load-replay" disabled>Load Replay</button>
+          </div>
+          <div id="replay-proxy-row">
+            <label>Proxy URL (override):</label>
+            <input id="replay-proxy" type="text" placeholder="https://proxy.example/?url={url}" />
+          </div>
+          <div id="replay-status">Fetch replay list to begin.</div>
+        </details>
+
+        <div class="hint">Tip: use <code>?map=map_name</code> in URL to auto-load after folder pick.</div>
+        <div id="status">Pick a folder with map files (or pick files) to start.</div>
       </div>
-      <input id="folder-picker" type="file" webkitdirectory directory multiple style="display:none" />
-      <input id="file-picker" type="file" accept=".pbo,.wrp" multiple style="display:none" />
-
-      <label>Map:</label>
-      <select id="map-select" disabled>
-        <option value="">-- pick folder/files first --</option>
-      </select>
-
-      <div class="row" style="margin-top:6px;">
-        <button id="btn-load-map" disabled>Load Map</button>
-      </div>
-
-      <div class="hint">Tip: use <code>?map=map_name</code> in URL to auto-load after folder pick.</div>
-      <div id="status">Pick a folder with map files (or pick files) to start.</div>
-    </div>
+    </details>
 
     <button id="plan-toggle" title="Toggle Plan Mode (P)">Plan</button>
     <div id="plan-panel">
@@ -225,6 +454,43 @@
     </div>
 
     <div id="hud"></div>
+    <div id="replay-label-layer"></div>
+    <div id="replay-panel">
+      <h2>Replay Timeline</h2>
+      <div id="replay-meta"></div>
+      <div class="row">
+        <button id="btn-replay-play">Play</button>
+        <button id="btn-replay-pause" disabled>Pause</button>
+        <label style="display:flex; align-items:center; gap:4px; color:#bbb; font-size:11px;">
+          <input type="checkbox" id="replay-pin-kills" />
+          Pin kills
+        </label>
+        <select id="replay-speed">
+          <option value="0.5">0.5x</option>
+          <option value="1" selected>1x</option>
+          <option value="2">2x</option>
+          <option value="4">4x</option>
+          <option value="8">8x</option>
+          <option value="16">16x</option>
+        </select>
+        <span id="replay-time">00:00:00 / 00:00:00</span>
+      </div>
+      <input id="replay-seek" type="range" min="0" max="0" value="0" />
+      <div class="replay-filter-row">
+        <label><input type="checkbox" id="replay-filter-messages" checked /> messages</label>
+        <label><input type="checkbox" id="replay-filter-kills" checked /> kills</label>
+        <label><input type="checkbox" id="replay-filter-hits" checked /> hits</label>
+        <label><input type="checkbox" id="replay-filter-medical" checked /> medical</label>
+      </div>
+      <details id="killboard-details" open>
+        <summary>Killboard</summary>
+        <div id="replay-killboard"></div>
+      </details>
+      <details id="eventboard-details" open>
+        <summary>Eventboard</summary>
+        <div id="replay-eventboard"></div>
+      </details>
+    </div>
     <canvas id="minimap" width="250" height="250"></canvas>
     <div id="controls-help">
       WASD - Move | QE - Up/Down | Mouse - Look | Shift - Fast | Scroll - Speed | P - Plan Mode

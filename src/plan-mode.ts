@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { TerrainInfo } from "./fly-camera";
+import { worldToMapX } from "./map-coords";
 
 export type MarkColor = "R" | "G" | "B";
 export type LineType = "ground" | "straight";
@@ -154,8 +155,9 @@ function disposeLine(line: THREE.Line) {
 
 /** Sample ground height via bilinear interpolation */
 function getGroundHeight(terrain: TerrainInfo, x: number, z: number): number {
-  const { elevations, gridWidth, gridHeight, cellSize } = terrain;
-  const gx = x / cellSize;
+  const { elevations, gridWidth, gridHeight, cellSize, mapSize } = terrain;
+  const mapX = worldToMapX(x, mapSize);
+  const gx = mapX / cellSize;
   const gz = z / cellSize;
   const ix = Math.max(0, Math.min(gridWidth - 2, Math.floor(gx)));
   const iz = Math.max(0, Math.min(gridHeight - 2, Math.floor(gz)));

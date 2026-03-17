@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { mapToWorldX } from "./map-coords";
 
 // Category indices from server classification
 const CATEGORY_VEGETATION = 0;
@@ -176,7 +177,7 @@ export function parseObjectsBinary(buffer: ArrayBuffer): ObjectsData {
   return { nObjects, nModels, classifications, positions, scales, quaternions, modelIndices };
 }
 
-export function createObjects(data: ObjectsData): THREE.Group {
+export function createObjects(data: ObjectsData, mapSize: number): THREE.Group {
   const group = new THREE.Group();
   const configs = getCategoryConfigs();
 
@@ -213,6 +214,7 @@ export function createObjects(data: ObjectsData): THREE.Group {
       const x = data.positions[i * 3];
       const y = data.positions[i * 3 + 1];
       const z = data.positions[i * 3 + 2];
+      const worldX = mapToWorldX(x, mapSize);
       const scale = Math.max(0.5, Math.min(data.scales[i], 5));
 
       quat.set(
@@ -222,7 +224,7 @@ export function createObjects(data: ObjectsData): THREE.Group {
         data.quaternions[i * 4 + 3],
       );
 
-      dummy.position.set(x, y, z);
+      dummy.position.set(worldX, y, z);
       dummy.quaternion.copy(quat);
       dummy.scale.set(scale, scale, scale);
       dummy.updateMatrix();

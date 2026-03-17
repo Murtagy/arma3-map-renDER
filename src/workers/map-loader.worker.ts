@@ -5,8 +5,8 @@ import { parseWrp } from "../parsers/wrp";
 import { parsePaa } from "../parsers/paa";
 import type {
   WorkerMapInfo,
-  WorkerRequest,
-  WorkerResponse,
+  MapWorkerRequest,
+  MapWorkerResponse,
   WorkerProgressMessage,
 } from "./types";
 
@@ -24,7 +24,7 @@ interface CachedWorkerMap {
 
 const cache = new Map<string, CachedWorkerMap>();
 
-function post(msg: WorkerResponse, transfer?: Transferable[]) {
+function post(msg: MapWorkerResponse, transfer?: Transferable[]) {
   if (transfer && transfer.length > 0) {
     self.postMessage(msg, transfer);
   } else {
@@ -234,7 +234,7 @@ async function handleGenerateSatellite(mapName: string, size: number | undefined
   );
 }
 
-self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
+self.onmessage = async (event: MessageEvent<MapWorkerRequest>) => {
   const msg = event.data;
   try {
     if (msg.type === "load_map") {

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { worldToMapX } from "./map-coords";
 
 /**
  * FPS-style fly camera controller.
@@ -94,8 +95,8 @@ export class FlyCamera {
     if (this.keys.has("KeyD")) this.camera.position.addScaledVector(right, speed);
     if (this.keys.has("KeyA")) this.camera.position.addScaledVector(right, -speed);
 
-    // Up/down
-    if (this.keys.has("KeyQ") || this.keys.has("Space"))
+    // Up/down (Q/E only; Space is reserved for replay play/pause)
+    if (this.keys.has("KeyQ"))
       this.camera.position.y += speed;
     if (this.keys.has("KeyE") || this.keys.has("KeyC"))
       this.camera.position.y -= speed;
@@ -107,8 +108,9 @@ export class FlyCamera {
 
   private getGroundHeight(x: number, z: number): number {
     if (!this.terrain) return 0;
-    const { elevations, gridWidth, gridHeight, cellSize } = this.terrain;
-    const gx = x / cellSize;
+    const { elevations, gridWidth, gridHeight, cellSize, mapSize } = this.terrain;
+    const mapX = worldToMapX(x, mapSize);
+    const gx = mapX / cellSize;
     const gz = z / cellSize;
     const ix = Math.max(0, Math.min(gridWidth - 2, Math.floor(gx)));
     const iz = Math.max(0, Math.min(gridHeight - 2, Math.floor(gz)));

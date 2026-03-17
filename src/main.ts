@@ -2,14 +2,19 @@ import * as THREE from "three";
 import { FlyCamera } from "./fly-camera";
 import { createTerrain, createWater, applySatelliteTexture, type TerrainData } from "./terrain";
 import { createObjects } from "./objects";
+import { mapToWorldX, worldToMapX } from "./map-coords";
 import { PlanMode, type MarkColor } from "./plan-mode";
 import type {
+  MapWorkerResponse,
   WorkerMapLoadedMessage,
   WorkerProgressMessage,
-  WorkerResponse,
   WorkerSatelliteReadyMessage,
   WorkerTerrainData,
   WorkerObjectsData,
+  ReplayData,
+  ReplayListItem,
+  ReplayTimelineEvent,
+  ReplayWorkerResponse,
 } from "./workers/types";
 
 // --- Three.js Setup ---
@@ -47,6 +52,9 @@ function setStatus(text: string) {
 
 // --- Worker ---
 const loaderWorker = new Worker(new URL("./workers/map-loader.worker.ts", import.meta.url), {
+  type: "module",
+});
+const replayWorker = new Worker(new URL("./workers/replay-loader.worker.ts", import.meta.url), {
   type: "module",
 });
 
@@ -181,6 +189,11 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyP" && !e.ctrlKey && !e.metaKey && !(e.target instanceof HTMLInputElement)) {
     togglePlanMode();
   }
+  if (e.code === "Space" && replayReady && !(e.target instanceof HTMLInputElement)) {
+    e.preventDefault();
+    replayPlaying = !replayPlaying;
+    updateReplayPanels();
+  }
   if (e.code === "Escape" && planMode.active && !planMode.hasPending() && planMode.isMoving()) {
     planMode.cancelMove();
     updatePlanUI();
@@ -216,6 +229,126 @@ interface MapFileEntry {
 }
 
 let mapFiles: MapFileEntry[] = [];
+let currentTerrainInfo: {
+  elevations: Float32Array;
+  gridWidth: number;
+  gridHeight: number;
+  cellSize: number;
+  mapSize: number;
+} | null = null;
+
+// --- Replay State ---
+interface ReplayRowEntry {
+  id: string;
+  row: ReplayListItem;
+}
+
+interface RuntimeUnitState {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+  dir: number;
+  stateFlag: number;
+  vehicleRef: number;
+  prevTimeSec: number;
+  currTimeSec: number;
+  prevX: number;
+  prevY: number;
+  prevZ: number;
+  prevDir: number;
+}
+
+interface RuntimeUnitVisual {
+  id: number;
+  name: string;
+  side: number;
+  unitType: string;
+  state: RuntimeUnitState;
+  mesh: THREE.Mesh;
+  labelEl: HTMLDivElement;
+}
+
+interface ReplayLine {
+  line: THREE.Line;
+  fromX: number;
+  fromZ: number;
+  toX: number;
+  toZ: number;
+  ttl: number;
+  kind: "kill" | "hit";
+}
+
+let replayRows: ReplayRowEntry[] = [];
+let replayVisibleRows: ReplayRowEntry[] = [];
+let replayData: ReplayData | null = null;
+let replayUnitsById = new Map<number, ReplayData["units"][number]>();
+let replayIsLoading = false;
+let replayReady = false;
+let replayPlaying = false;
+let replayCurrentFrame = 0;
+let replayCurrentTimeSec = 0;
+let replayLastAppliedFrame = -1;
+let replayPendingStart = false;
+let replayWaitingForMap = false;
+let replayLastAutoReplayParam: string | null = null;
+let replayEventFilter = {
+  messages: true,
+  kills: true,
+  hits: true,
+  medical: true,
+};
+
+const replayRuntimeStates = new Map<number, RuntimeUnitState>();
+const replayVisuals = new Map<number, RuntimeUnitVisual>();
+const replayGroup = new THREE.Group();
+scene.add(replayGroup);
+const replayLines: ReplayLine[] = [];
+
+const SIDE_COLORS: Record<number, number> = {
+  0: 0x3a8fff,
+  1: 0xff4a4a,
+  2: 0x45d36f,
+  3: 0xd08cff,
+  4: 0xb0b0b0,
+  5: 0x444444,
+};
+
+const pendingAutoReplay = new URLSearchParams(window.location.search).get("replay");
+const pendingAutoReplayArchive = new URLSearchParams(window.location.search).get("archive");
+const DEPLOY_REPLAY_PROXY_URL =
+  typeof (import.meta as { env?: Record<string, unknown> }).env?.VITE_REPLAY_PROXY_URL === "string"
+    ? String((import.meta as { env?: Record<string, unknown> }).env?.VITE_REPLAY_PROXY_URL).trim()
+    : "";
+
+const replayProxyInput = document.getElementById("replay-proxy") as HTMLInputElement;
+const replayProxyRow = document.getElementById("replay-proxy-row") as HTMLElement;
+const replayServerFilter = document.getElementById("replay-server-filter") as HTMLSelectElement;
+const btnFetchReplays = document.getElementById("btn-fetch-replays") as HTMLButtonElement;
+const replaySelect = document.getElementById("replay-select") as HTMLSelectElement;
+const btnLoadReplay = document.getElementById("btn-load-replay") as HTMLButtonElement;
+const replayStatusEl = document.getElementById("replay-status") as HTMLElement;
+const replayMetaEl = document.getElementById("replay-meta") as HTMLElement;
+const replayPanel = document.getElementById("replay-panel") as HTMLElement;
+const replayPlayBtn = document.getElementById("btn-replay-play") as HTMLButtonElement;
+const replayPauseBtn = document.getElementById("btn-replay-pause") as HTMLButtonElement;
+const replaySeekInput = document.getElementById("replay-seek") as HTMLInputElement;
+const replaySpeedSelect = document.getElementById("replay-speed") as HTMLSelectElement;
+const replayTimeEl = document.getElementById("replay-time") as HTMLElement;
+const replayPinKillsInput = document.getElementById("replay-pin-kills") as HTMLInputElement;
+const replayKillboardEl = document.getElementById("replay-killboard") as HTMLElement;
+const replayEventboardEl = document.getElementById("replay-eventboard") as HTMLElement;
+const replayFilterMessages = document.getElementById("replay-filter-messages") as HTMLInputElement;
+const replayFilterKills = document.getElementById("replay-filter-kills") as HTMLInputElement;
+const replayFilterHits = document.getElementById("replay-filter-hits") as HTMLInputElement;
+const replayFilterMedical = document.getElementById("replay-filter-medical") as HTMLInputElement;
+const replayLabelLayer = document.getElementById("replay-label-layer") as HTMLElement;
+
+replayProxyInput.value = localStorage.getItem("replay_proxy_url") || DEPLOY_REPLAY_PROXY_URL;
+replaySpeedSelect.value = localStorage.getItem("replay_speed") || "1";
+if (replayProxyInput.value.trim()) {
+  replayProxyRow.style.display = "none";
+}
 
 function extractMapName(name: string): string {
   const file = name.split("/").pop()?.split("\\").pop() ?? name;
@@ -230,11 +363,115 @@ function updateUrlMapParam(mapName: string) {
   history.replaceState(null, "", url);
 }
 
+function updateUrlReplayParams(replayName: string, archive?: number) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("replay", replayName);
+  if (typeof archive === "number" && archive > 0) {
+    url.searchParams.set("archive", String(archive));
+  } else {
+    url.searchParams.delete("archive");
+  }
+  history.replaceState(null, "", url);
+}
+
+function setReplayStatus(text: string) {
+  replayStatusEl.textContent = text;
+}
+
+function getReplayProxyUrl(): string | undefined {
+  const value = replayProxyInput.value.trim();
+  if (!value) {
+    localStorage.removeItem("replay_proxy_url");
+    return DEPLOY_REPLAY_PROXY_URL || undefined;
+  }
+  localStorage.setItem("replay_proxy_url", value);
+  return value;
+}
+
+function normalizeMapToken(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/^(cup_|cwr3_|gm_|rhspk_|rhs_|uk3cb_|gm_)/, "")
+    .replace(/_summer|_winter|_old|_s$/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function replayMapCandidates(data: ReplayData): string[] {
+  const fromHeader = data.header.mapKey || "";
+  const fromName = data.replayName.includes(".")
+    ? data.replayName.slice(data.replayName.lastIndexOf(".") + 1)
+    : "";
+  const set = new Set<string>();
+  for (const item of [fromHeader, fromName]) {
+    if (!item) continue;
+    set.add(item.toLowerCase());
+    set.add(item.replace(/_/g, "").toLowerCase());
+    set.add(normalizeMapToken(item));
+  }
+  return Array.from(set).filter((item) => item.length > 0);
+}
+
+function mapEntryTokens(entry: MapFileEntry): string[] {
+  const fromName = entry.mapName;
+  const fromPath = extractMapName(entry.relativePath);
+  const set = new Set<string>();
+  for (const item of [fromName, fromPath]) {
+    set.add(item.toLowerCase());
+    set.add(item.replace(/_/g, "").toLowerCase());
+    set.add(normalizeMapToken(item));
+  }
+  return Array.from(set).filter((item) => item.length > 0);
+}
+
+function findReplayMapMatches(data: ReplayData): MapFileEntry[] {
+  const candidates = replayMapCandidates(data);
+  const exactMatches: MapFileEntry[] = [];
+  const fuzzyMatches: MapFileEntry[] = [];
+
+  for (const entry of mapFiles) {
+    const tokens = mapEntryTokens(entry);
+    const isExact = candidates.some((candidate) => tokens.includes(candidate));
+    if (isExact) {
+      exactMatches.push(entry);
+      continue;
+    }
+    const isFuzzy = candidates.some((candidate) =>
+      tokens.some((token) => token.includes(candidate) || candidate.includes(token))
+    );
+    if (isFuzzy) fuzzyMatches.push(entry);
+  }
+
+  if (exactMatches.length > 0) return exactMatches;
+  return fuzzyMatches;
+}
+
+function formatReplayTime(timeSec: number): string {
+  const clamped = Math.max(0, Math.floor(timeSec));
+  const h = String(Math.floor(clamped / 3600)).padStart(2, "0");
+  const m = String(Math.floor((clamped % 3600) / 60)).padStart(2, "0");
+  const s = String(clamped % 60).padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
+
+function unitSideCss(side: number): string {
+  if (side === 0) return "west";
+  if (side === 1) return "east";
+  if (side === 2) return "guer";
+  if (side === 3) return "civ";
+  return "unknown";
+}
+
+function mapXToWorldX(mapX: number): number {
+  if (!currentMapSize) return mapX;
+  return mapToWorldX(mapX, currentMapSize);
+}
+
 function clearCurrentMap() {
   minimapImage = null;
   if (currentTerrain) scene.remove(currentTerrain);
   if (currentWater) scene.remove(currentWater);
   if (currentObjects) scene.remove(currentObjects);
+  currentTerrainInfo = null;
   scene.remove(gridHelper);
 }
 
@@ -245,6 +482,10 @@ function applyLoadedMap(
   satelliteTiles: number
 ) {
   clearCurrentMap();
+  if (replayData) {
+    replayReady = false;
+    clearReplayRuntime();
+  }
 
   const terrainInput: TerrainData = {
     gridWidth: terrainData.gridWidth,
@@ -272,6 +513,7 @@ function applyLoadedMap(
     mapSize: terrainData.mapSize,
   };
   flyCamera.terrain = terrainInfoData;
+  currentTerrainInfo = terrainInfoData;
   planMode.setTerrainInfo(terrainInfoData);
 
   const centerX = terrainData.mapSize / 2;
@@ -281,7 +523,7 @@ function applyLoadedMap(
   const centerElev = terrainData.elevations[centerIdx] || 100;
   camera.position.set(centerX, centerElev + 500, centerZ);
 
-  currentObjects = createObjects(objectsData);
+  currentObjects = createObjects(objectsData, terrainData.mapSize);
   scene.add(currentObjects);
 
   currentMapName = mapName;
@@ -327,7 +569,769 @@ function handleSatelliteReady(msg: WorkerSatelliteReadyMessage) {
   setStatus(`${statusEl.textContent}\nSatellite texture applied (${msg.width}x${msg.height}).`);
 }
 
-loaderWorker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+function sampleTerrainHeight(x: number, z: number): number {
+  if (!currentTerrainInfo || currentTerrainInfo.gridWidth < 2 || currentTerrainInfo.gridHeight < 2) {
+    return 0;
+  }
+  const mapX = worldToMapX(x, currentTerrainInfo.mapSize);
+  const gx = mapX / currentTerrainInfo.cellSize;
+  const gz = z / currentTerrainInfo.cellSize;
+
+  const x0 = Math.max(0, Math.min(currentTerrainInfo.gridWidth - 1, Math.floor(gx)));
+  const z0 = Math.max(0, Math.min(currentTerrainInfo.gridHeight - 1, Math.floor(gz)));
+  const x1 = Math.max(0, Math.min(currentTerrainInfo.gridWidth - 1, x0 + 1));
+  const z1 = Math.max(0, Math.min(currentTerrainInfo.gridHeight - 1, z0 + 1));
+  const tx = gx - x0;
+  const tz = gz - z0;
+
+  const idx00 = z0 * currentTerrainInfo.gridWidth + x0;
+  const idx10 = z0 * currentTerrainInfo.gridWidth + x1;
+  const idx01 = z1 * currentTerrainInfo.gridWidth + x0;
+  const idx11 = z1 * currentTerrainInfo.gridWidth + x1;
+
+  const h00 = currentTerrainInfo.elevations[idx00] ?? 0;
+  const h10 = currentTerrainInfo.elevations[idx10] ?? h00;
+  const h01 = currentTerrainInfo.elevations[idx01] ?? h00;
+  const h11 = currentTerrainInfo.elevations[idx11] ?? h00;
+
+  const hx0 = h00 + (h10 - h00) * tx;
+  const hx1 = h01 + (h11 - h01) * tx;
+  return hx0 + (hx1 - hx0) * tz;
+}
+
+function clearReplayLines() {
+  for (const line of replayLines) {
+    replayGroup.remove(line.line);
+    line.line.geometry.dispose();
+    const material = line.line.material;
+    if (material instanceof THREE.Material) material.dispose();
+  }
+  replayLines.length = 0;
+}
+
+function clearReplayVisuals() {
+  clearReplayLines();
+  for (const visual of replayVisuals.values()) {
+    replayGroup.remove(visual.mesh);
+    visual.mesh.geometry.dispose();
+    const material = visual.mesh.material;
+    if (material instanceof THREE.Material) material.dispose();
+    visual.labelEl.remove();
+  }
+  replayVisuals.clear();
+}
+
+function clearReplayRuntime() {
+  replayRuntimeStates.clear();
+  clearReplayVisuals();
+  replayCurrentFrame = 0;
+  replayCurrentTimeSec = 0;
+  replayLastAppliedFrame = -1;
+  replayPlaying = false;
+}
+
+function sideColor(side: number): number {
+  return SIDE_COLORS[side] ?? SIDE_COLORS[4];
+}
+
+function stateIsDead(unitType: string, stateFlag: number): boolean {
+  if (stateFlag === -1) return true;
+  if (stateFlag >= 1) {
+    if (unitType === "man") return true;
+    return true;
+  }
+  return false;
+}
+
+function stateIsUnconscious(unitType: string, stateFlag: number): boolean {
+  return unitType === "man" && stateFlag >= 2;
+}
+
+function ensureReplayVisual(id: number): RuntimeUnitVisual | null {
+  const state = replayRuntimeStates.get(id);
+  const unit = replayUnitsById.get(id);
+  if (!state || !unit) return null;
+  const existing = replayVisuals.get(id);
+  if (existing) return existing;
+
+  const geometry = new THREE.SphereGeometry(8, 10, 10);
+  const material = new THREE.MeshLambertMaterial({
+    color: sideColor(unit.side),
+    transparent: true,
+    opacity: 0.95,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.visible = false;
+  replayGroup.add(mesh);
+
+  const labelEl = document.createElement("div");
+  labelEl.className = `replay-label unit-side-${unitSideCss(unit.side)}`;
+  labelEl.textContent = unit.playerName || unit.name || `#${id}`;
+  labelEl.style.display = "none";
+  replayLabelLayer.appendChild(labelEl);
+
+  const visual: RuntimeUnitVisual = {
+    id,
+    name: unit.playerName || unit.name,
+    side: unit.side,
+    unitType: unit.unitType || "unknown",
+    state,
+    mesh,
+    labelEl,
+  };
+  replayVisuals.set(id, visual);
+  return visual;
+}
+
+function resolveInterpolatedState(state: RuntimeUnitState, nowSec: number) {
+  const duration = state.currTimeSec - state.prevTimeSec;
+  let alpha = 1;
+  if (duration > 0.001) {
+    alpha = Math.max(0, Math.min(1, (nowSec - state.prevTimeSec) / duration));
+  }
+  return {
+    x: state.prevX + (state.x - state.prevX) * alpha,
+    y: state.prevY + (state.y - state.prevY) * alpha,
+    z: state.prevZ + (state.z - state.prevZ) * alpha,
+    dir: state.prevDir + (state.dir - state.prevDir) * alpha,
+  };
+}
+
+function resolveReplayWorldPosition(id: number, nowSec: number): { x: number; y: number; z: number } | null {
+  const state = replayRuntimeStates.get(id);
+  const unit = replayUnitsById.get(id);
+  if (!state || !unit) return null;
+
+  const base = resolveInterpolatedState(state, nowSec);
+  let mapX = base.x;
+  let mapZ = base.y;
+  let alt = base.z;
+
+  if (unit.unitType === "man" && state.vehicleRef > 0) {
+    const vehicleState = replayRuntimeStates.get(state.vehicleRef);
+    if (vehicleState) {
+      const vehicleBase = resolveInterpolatedState(vehicleState, nowSec);
+      mapX = vehicleBase.x;
+      mapZ = vehicleBase.y;
+      alt = vehicleBase.z;
+    }
+  }
+
+  const worldX = mapXToWorldX(mapX);
+  const terrainY = sampleTerrainHeight(worldX, mapZ);
+  return {
+    x: worldX,
+    y: terrainY + Math.max(alt, 0) + 3,
+    z: mapZ,
+  };
+}
+
+function updateReplayVisuals(nowSec: number) {
+  if (!replayReady) return;
+  for (const visual of replayVisuals.values()) {
+    visual.mesh.visible = false;
+    visual.labelEl.style.display = "none";
+  }
+  for (const [id, state] of replayRuntimeStates.entries()) {
+    const visual = ensureReplayVisual(id);
+    const unit = replayUnitsById.get(id);
+    if (!visual || !unit) continue;
+    const worldPos = resolveReplayWorldPosition(id, nowSec);
+    if (!worldPos) {
+      visual.labelEl.style.display = "none";
+      continue;
+    }
+
+    const dead = stateIsDead(unit.unitType, state.stateFlag);
+    const unconscious = stateIsUnconscious(unit.unitType, state.stateFlag);
+    visual.mesh.visible = true;
+    visual.mesh.position.set(worldPos.x, worldPos.y, worldPos.z);
+    visual.labelEl.textContent = visual.name || `#${id}`;
+
+    const material = visual.mesh.material as THREE.MeshLambertMaterial;
+    if (dead) {
+      material.color.setHex(0x555555);
+      material.opacity = 0.35;
+    } else if (unconscious) {
+      material.color.setHex(0xffd166);
+      material.opacity = 0.65;
+    } else {
+      material.color.setHex(sideColor(unit.side));
+      material.opacity = 0.95;
+    }
+
+    if (dead) {
+      visual.labelEl.style.display = "none";
+      continue;
+    }
+
+    const p = new THREE.Vector3(worldPos.x, worldPos.y + 16, worldPos.z).project(camera);
+    if (p.z < -1 || p.z > 1) {
+      visual.labelEl.style.display = "none";
+      continue;
+    }
+    const sx = (p.x * 0.5 + 0.5) * window.innerWidth;
+    const sy = (-p.y * 0.5 + 0.5) * window.innerHeight;
+    if (sx < -80 || sx > window.innerWidth + 80 || sy < -30 || sy > window.innerHeight + 30) {
+      visual.labelEl.style.display = "none";
+      continue;
+    }
+    visual.labelEl.style.display = "block";
+    visual.labelEl.style.left = `${sx}px`;
+    visual.labelEl.style.top = `${sy}px`;
+  }
+}
+
+function addReplayLine(
+  from: { x: number; y: number; z: number },
+  to: { x: number; y: number; z: number },
+  side: number,
+  kind: "kill" | "hit",
+  keep = false
+) {
+  const points = [new THREE.Vector3(from.x, from.y + 2, from.z), new THREE.Vector3(to.x, to.y + 2, to.z)];
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const material = new THREE.LineBasicMaterial({
+    color: kind === "kill" ? sideColor(side) : 0xffffff,
+    transparent: true,
+    opacity: kind === "kill" ? 0.65 : 0.35,
+  });
+  const line = new THREE.Line(geometry, material);
+  replayGroup.add(line);
+
+  replayLines.push({
+    line,
+    fromX: from.x,
+    fromZ: from.z,
+    toX: to.x,
+    toZ: to.z,
+    ttl: keep ? Number.POSITIVE_INFINITY : kind === "kill" ? 8 : 2,
+    kind,
+  });
+}
+
+function updateReplayLines(dt: number) {
+  for (let i = replayLines.length - 1; i >= 0; i--) {
+    const line = replayLines[i];
+    if (!Number.isFinite(line.ttl)) continue;
+    line.ttl -= dt;
+    if (line.ttl > 0) continue;
+    replayGroup.remove(line.line);
+    line.line.geometry.dispose();
+    const material = line.line.material;
+    if (material instanceof THREE.Material) material.dispose();
+    replayLines.splice(i, 1);
+  }
+}
+
+function findFrameForTime(timeSec: number): number {
+  if (!replayData || replayData.frameTimes.length === 0) return 0;
+  let lo = 0;
+  let hi = replayData.frameTimes.length - 1;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (replayData.frameTimes[mid] <= timeSec) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo;
+}
+
+function applyReplayFrameStates(frameIndex: number) {
+  if (!replayData) return;
+  const frameTimeSec = replayData.frameTimes[frameIndex] ?? 0;
+  const stateOffset = replayData.frameStateOffsets[frameIndex] ?? 0;
+  const stateCount = replayData.frameStateCounts[frameIndex] ?? 0;
+  const stride = replayData.stateStride;
+
+  for (let i = 0; i < stateCount; i++) {
+    const base = (stateOffset + i) * stride;
+    const id = Math.trunc(replayData.stateData[base] || 0);
+    if (id <= 0) continue;
+
+    const nextX = replayData.stateData[base + 1] || 0;
+    const nextY = replayData.stateData[base + 2] || 0;
+    const nextZ = replayData.stateData[base + 3] || 0;
+    const nextDir = replayData.stateData[base + 4] || 0;
+    const nextFlag = replayData.stateData[base + 5] || 0;
+    const nextVehicle = replayData.stateData[base + 6] || 0;
+
+    const existing = replayRuntimeStates.get(id);
+    if (!existing) {
+      replayRuntimeStates.set(id, {
+        id,
+        x: nextX,
+        y: nextY,
+        z: nextZ,
+        dir: nextDir,
+        stateFlag: nextFlag,
+        vehicleRef: nextVehicle,
+        prevTimeSec: frameTimeSec,
+        currTimeSec: frameTimeSec,
+        prevX: nextX,
+        prevY: nextY,
+        prevZ: nextZ,
+        prevDir: nextDir,
+      });
+      continue;
+    }
+
+    existing.prevX = existing.x;
+    existing.prevY = existing.y;
+    existing.prevZ = existing.z;
+    existing.prevDir = existing.dir;
+    existing.prevTimeSec = existing.currTimeSec;
+    existing.x = nextX;
+    existing.y = nextY;
+    existing.z = nextZ;
+    existing.dir = nextDir;
+    existing.stateFlag = nextFlag;
+    existing.vehicleRef = nextVehicle;
+    existing.currTimeSec = frameTimeSec;
+  }
+}
+
+function applyReplayFrameEvents(frameIndex: number, emitVisuals: boolean) {
+  if (!replayData || !emitVisuals) return;
+  const eventOffset = replayData.frameEventOffsets[frameIndex] ?? 0;
+  const eventCount = replayData.frameEventCounts[frameIndex] ?? 0;
+  for (let i = 0; i < eventCount; i++) {
+    const event = replayData.events[eventOffset + i];
+    if (!event) continue;
+    if (event.type === 4) {
+      const killerPos = resolveReplayWorldPosition(event.killerId, event.timeSec);
+      const victimPos = resolveReplayWorldPosition(event.victimId, event.timeSec);
+      const killerUnit = replayUnitsById.get(event.killerId);
+      if (killerPos && victimPos) {
+        addReplayLine(
+          killerPos,
+          victimPos,
+          killerUnit?.side ?? 4,
+          "kill",
+          replayPinKillsInput.checked
+        );
+      }
+      continue;
+    }
+    if (event.type === 5) {
+      const fromPos = resolveReplayWorldPosition(event.sourceId, event.timeSec);
+      const toPos = resolveReplayWorldPosition(event.targetId, event.timeSec);
+      const sourceUnit = replayUnitsById.get(event.sourceId);
+      if (fromPos && toPos) {
+        addReplayLine(fromPos, toPos, sourceUnit?.side ?? 4, "hit");
+      }
+    }
+  }
+}
+
+function rebuildReplayStateToFrame(targetFrame: number, emitVisualEvents: boolean) {
+  if (!replayData) return;
+  replayRuntimeStates.clear();
+  clearReplayVisuals();
+  clearReplayLines();
+
+  const clamped = Math.max(0, Math.min(targetFrame, replayData.frameTimes.length - 1));
+  for (let frame = 0; frame <= clamped; frame++) {
+    applyReplayFrameStates(frame);
+    applyReplayFrameEvents(frame, emitVisualEvents);
+  }
+  replayLastAppliedFrame = clamped;
+}
+
+function setReplayTime(timeSec: number, emitVisualEvents: boolean) {
+  if (!replayData || replayData.frameTimes.length === 0) return;
+  const lastTime = replayData.frameTimes[replayData.frameTimes.length - 1] || 0;
+  replayCurrentTimeSec = Math.max(0, Math.min(timeSec, lastTime));
+  const targetFrame = findFrameForTime(replayCurrentTimeSec);
+
+  if (targetFrame < replayLastAppliedFrame) {
+    rebuildReplayStateToFrame(targetFrame, emitVisualEvents);
+  } else {
+    for (let frame = replayLastAppliedFrame + 1; frame <= targetFrame; frame++) {
+      applyReplayFrameStates(frame);
+      applyReplayFrameEvents(frame, emitVisualEvents);
+    }
+    replayLastAppliedFrame = targetFrame;
+  }
+
+  replayCurrentFrame = targetFrame;
+  updateReplayVisuals(replayCurrentTimeSec);
+  updateReplayPanels();
+}
+
+function focusReplayUnit(unitId: number) {
+  const pos = resolveReplayWorldPosition(unitId, replayCurrentTimeSec);
+  if (!pos) return;
+  camera.position.set(pos.x + 60, pos.y + 120, pos.z + 60);
+}
+
+function describeReplayEvent(event: ReplayTimelineEvent): string {
+  if (event.type === 0) return event.message;
+  if (event.type === 4) {
+    const killer = replayUnitsById.get(event.killerId);
+    const victim = replayUnitsById.get(event.victimId);
+    const killerName = killer?.playerName || killer?.name || `#${event.killerId}`;
+    const victimName = victim?.playerName || victim?.name || `#${event.victimId}`;
+    const dist = event.distance > 0 ? ` (${Math.round(event.distance)}m)` : "";
+    return `${killerName} -> ${victimName} with ${event.weapon}${dist}`;
+  }
+  if (event.type === 5) {
+    const source = replayUnitsById.get(event.sourceId);
+    const target = replayUnitsById.get(event.targetId);
+    const sourceName = source?.playerName || source?.name || `#${event.sourceId}`;
+    const targetName = target?.playerName || target?.name || `#${event.targetId}`;
+    return `${sourceName} hit ${targetName} (${event.weapon})`;
+  }
+  if (event.type === 7) {
+    const actor = replayUnitsById.get(event.actorId);
+    const target = replayUnitsById.get(event.targetId);
+    const actorName = actor?.playerName || actor?.name || `#${event.actorId}`;
+    const targetName = target?.playerName || target?.name || `#${event.targetId}`;
+    return `${actorName} -> ${targetName}: ${event.action}`;
+  }
+  return `Event ${event.eventType}`;
+}
+
+function updateKillboard() {
+  if (!replayData) {
+    replayKillboardEl.innerHTML = "";
+    return;
+  }
+
+  const stats = new Map<number, { kills: number; deaths: number; teamkills: number }>();
+  const ensure = (id: number) => {
+    const existing = stats.get(id);
+    if (existing) return existing;
+    const next = { kills: 0, deaths: 0, teamkills: 0 };
+    stats.set(id, next);
+    return next;
+  };
+
+  for (const event of replayData.events) {
+    if (event.type !== 4) continue;
+    if (event.killerId > 0 && event.killerId !== event.victimId) {
+      ensure(event.killerId).kills++;
+    }
+    if (event.victimId > 0) {
+      ensure(event.victimId).deaths++;
+    }
+    const killerSide = replayUnitsById.get(event.killerId)?.side;
+    const victimSide = replayUnitsById.get(event.victimId)?.side;
+    if (
+      event.killerId > 0 &&
+      event.killerId !== event.victimId &&
+      killerSide !== undefined &&
+      killerSide === victimSide
+    ) {
+      ensure(event.killerId).teamkills++;
+    }
+  }
+
+  const rows = Array.from(stats.entries())
+    .map(([id, value]) => ({ id, ...value }))
+    .sort((a, b) => b.kills - a.kills || a.deaths - b.deaths)
+    .slice(0, 80);
+
+  replayKillboardEl.innerHTML = rows
+    .map((row) => {
+      const unit = replayUnitsById.get(row.id);
+      const name = unit?.playerName || unit?.name || `#${row.id}`;
+      const side = unitSideCss(unit?.side ?? 4);
+      return (
+        `<button class="kb-row unit-side-${side}" data-unit-id="${row.id}" type="button">` +
+        `<span class="kb-name">${name}</span>` +
+        `<span class="kb-stats">${row.kills}/${row.deaths}${row.teamkills > 0 ? ` tk:${row.teamkills}` : ""}</span>` +
+        `</button>`
+      );
+    })
+    .join("");
+}
+
+function filteredReplayEvents(): ReplayTimelineEvent[] {
+  if (!replayData) return [];
+  return replayData.events.filter((event) => {
+    if (event.type === 0) return replayEventFilter.messages;
+    if (event.type === 4) return replayEventFilter.kills;
+    if (event.type === 5) return replayEventFilter.hits;
+    if (event.type === 7) return replayEventFilter.medical;
+    return false;
+  });
+}
+
+function updateEventboard() {
+  if (!replayData) {
+    replayEventboardEl.innerHTML = "";
+    return;
+  }
+  const events = filteredReplayEvents().slice(-1500);
+  replayEventboardEl.innerHTML = events
+    .map((event) => {
+      return (
+        `<button class="ev-row" data-time="${event.timeSec}" data-frame="${event.frame}" type="button">` +
+        `<span class="ev-time">${formatReplayTime(event.timeSec)}</span>` +
+        `<span class="ev-text">${describeReplayEvent(event)}</span>` +
+        `</button>`
+      );
+    })
+    .join("");
+}
+
+function updateReplayPanels() {
+  if (!replayData || replayData.frameTimes.length === 0) {
+    replayPanel.style.display = "none";
+    return;
+  }
+  replayPanel.style.display = "block";
+  const last = replayData.frameTimes[replayData.frameTimes.length - 1] || 0;
+  replaySeekInput.max = String(last);
+  replaySeekInput.value = String(Math.floor(replayCurrentTimeSec));
+  replayTimeEl.textContent = `${formatReplayTime(replayCurrentTimeSec)} / ${formatReplayTime(last)}`;
+  replayPlayBtn.disabled = replayPlaying;
+  replayPauseBtn.disabled = !replayPlaying;
+}
+
+function replayMapMatchesCurrentMap(): boolean {
+  if (!replayData || !currentMapName) return false;
+  const currentToken = normalizeMapToken(currentMapName);
+  if (!currentToken) return false;
+  return replayMapCandidates(replayData).some((candidate) => {
+    return candidate === currentToken || candidate.includes(currentToken) || currentToken.includes(candidate);
+  });
+}
+
+function startReplayIfReady() {
+  if (!replayData) return;
+  if (!currentMapName) {
+    replayPendingStart = true;
+    replayWaitingForMap = true;
+    setReplayStatus("Load a map to start replay.");
+    return;
+  }
+  if (!replayMapMatchesCurrentMap()) {
+    replayPendingStart = true;
+    replayWaitingForMap = true;
+    setReplayStatus(`Replay expects map "${replayData.header.mapKey}". Pick a matching map and load it.`);
+    return;
+  }
+
+  replayReady = true;
+  replayPendingStart = false;
+  replayWaitingForMap = false;
+  clearReplayRuntime();
+
+  const firstTime = replayData.frameTimes[0] || 0;
+  replayCurrentTimeSec = firstTime;
+  setReplayTime(firstTime, true);
+  setReplayStatus(`Replay ready: ${replayData.replayName}`);
+  updateReplayPanels();
+}
+
+function attemptMapAutoloadForReplay() {
+  if (!replayData) return;
+  if (mapFiles.length === 0) {
+    replayPendingStart = true;
+    replayWaitingForMap = true;
+    setReplayStatus("Pick map files/folder so replay can auto-load the terrain.");
+    return;
+  }
+
+  const matches = findReplayMapMatches(replayData);
+  if (matches.length === 0) {
+    replayPendingStart = true;
+    replayWaitingForMap = true;
+    setReplayStatus(
+      `No map matched replay key "${replayData.header.mapKey}". Choose map manually and press Load Map.`
+    );
+    return;
+  }
+
+  if (matches.length > 1) {
+    replayPendingStart = true;
+    replayWaitingForMap = true;
+    const names = matches.slice(0, 4).map((item) => item.mapName).join(", ");
+    setReplayStatus(`Replay map is ambiguous (${names}). Select one map manually.`);
+    return;
+  }
+
+  const target = matches[0];
+  mapSelect.value = target.id;
+  if (currentMapName?.toLowerCase() === target.mapName.toLowerCase()) {
+    startReplayIfReady();
+    return;
+  }
+
+  replayPendingStart = true;
+  replayWaitingForMap = true;
+  void loadMapFile(target.file, target.relativePath);
+  setReplayStatus(`Auto-loading map ${target.mapName} for replay...`);
+}
+
+function updateReplayMeta() {
+  if (!replayData) {
+    replayMetaEl.textContent = "";
+    return;
+  }
+  replayMetaEl.textContent = [
+    `Replay: ${replayData.replayName}`,
+    `Map: ${replayData.header.mapKey}`,
+    `Mission: ${replayData.header.missionName}`,
+    `Source: ${replayData.source}`,
+    `Frames: ${replayData.frameTimes.length}`,
+  ].join("\n");
+}
+
+function replayRowServerTag(entry: ReplayRowEntry): string {
+  const tag = entry.row.serverTag || entry.row.tags[0] || entry.row.name.split(".")[0] || "";
+  return tag.trim();
+}
+
+function renderReplayServerOptions() {
+  const selected = replayServerFilter.value || "all";
+  const servers = Array.from(
+    new Set(replayRows.map((entry) => replayRowServerTag(entry)).filter((item) => item.length > 0))
+  ).sort((a, b) => a.localeCompare(b));
+
+  replayServerFilter.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = "all";
+  all.textContent = "All";
+  replayServerFilter.appendChild(all);
+  for (const server of servers) {
+    const option = document.createElement("option");
+    option.value = server;
+    option.textContent = server;
+    replayServerFilter.appendChild(option);
+  }
+  replayServerFilter.value = servers.includes(selected) ? selected : "all";
+}
+
+function renderReplaySelectOptions() {
+  const selectedId = replaySelect.value;
+  const server = replayServerFilter.value || "all";
+  replayVisibleRows =
+    server === "all"
+      ? replayRows
+      : replayRows.filter((entry) => replayRowServerTag(entry).toLowerCase() === server.toLowerCase());
+
+  replaySelect.innerHTML = "";
+  if (replayVisibleRows.length === 0) {
+    replaySelect.disabled = true;
+    btnLoadReplay.disabled = true;
+    replaySelect.innerHTML = '<option value="">-- no replays for this server --</option>';
+    return;
+  }
+
+  for (const entry of replayVisibleRows) {
+    const option = document.createElement("option");
+    option.value = entry.id;
+    const serverTag = replayRowServerTag(entry) || "?";
+    option.textContent = `${serverTag} | ${entry.row.missionDate} | ${entry.row.missionName} | ${entry.row.mapKey}`;
+    option.title = entry.row.name;
+    replaySelect.appendChild(option);
+  }
+  replaySelect.disabled = false;
+  btnLoadReplay.disabled = false;
+  replaySelect.value = replayVisibleRows.some((entry) => entry.id === selectedId)
+    ? selectedId
+    : replayVisibleRows[0].id;
+}
+
+function setReplayRows(rows: ReplayListItem[]) {
+  replayRows = rows.map((row, index) => ({
+    id: `${index}:${row.name}`,
+    row,
+  }));
+  replayVisibleRows = [];
+  renderReplayServerOptions();
+  renderReplaySelectOptions();
+}
+
+function loadReplayList() {
+  if (replayIsLoading) return;
+  replayIsLoading = true;
+  setReplayStatus("Fetching replay list...");
+  replayWorker.postMessage({
+    type: "load_replay_list",
+    filters: ["1", "2", "3", "4", "10", "20:1"],
+    proxyUrl: getReplayProxyUrl(),
+  });
+}
+
+function loadSelectedReplay() {
+  if (replayIsLoading) return;
+  const selected = replayRows.find((entry) => entry.id === replaySelect.value);
+  if (!selected) return;
+  replayIsLoading = true;
+  replayReady = false;
+  replayPlaying = false;
+  setReplayStatus(`Loading replay ${selected.row.name}...`);
+  replayWorker.postMessage({
+    type: "load_replay_detail",
+    replayName: selected.row.name,
+    archive: selected.row.archive,
+    proxyUrl: getReplayProxyUrl(),
+  });
+}
+
+replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
+  const msg = event.data;
+  if (msg.type === "replay_progress") {
+    setReplayStatus(msg.detail || msg.stage);
+    return;
+  }
+  if (msg.type === "error") {
+    replayIsLoading = false;
+    replayReady = false;
+    setReplayStatus(`Error: ${msg.message}`);
+    return;
+  }
+  if (msg.type === "replay_list_loaded") {
+    replayIsLoading = false;
+    setReplayRows(msg.rows);
+    setReplayStatus(`Loaded ${msg.rows.length} replays (${msg.source}).`);
+
+    if (pendingAutoReplay && pendingAutoReplay !== replayLastAutoReplayParam) {
+      const archiveFilter = pendingAutoReplayArchive ? Number(pendingAutoReplayArchive) : NaN;
+      const target = replayRows.find((entry) => {
+        if (entry.row.name !== pendingAutoReplay) return false;
+        if (!Number.isFinite(archiveFilter)) return true;
+        return entry.row.archive === archiveFilter;
+      });
+      if (target) {
+        const serverTag = replayRowServerTag(target);
+        const hasServerOption = Array.from(replayServerFilter.options).some((opt) => opt.value === serverTag);
+        if (serverTag && hasServerOption) {
+          replayServerFilter.value = serverTag;
+          renderReplaySelectOptions();
+        }
+        replaySelect.value = target.id;
+        replayLastAutoReplayParam = pendingAutoReplay;
+        loadSelectedReplay();
+      }
+    }
+    return;
+  }
+  if (msg.type === "replay_parsed") {
+    replayIsLoading = false;
+    replayData = msg.replay;
+    replayUnitsById = new Map(replayData.units.map((unit) => [unit.id, unit]));
+    replayReady = false;
+    replayPendingStart = true;
+    clearReplayRuntime();
+    updateReplayMeta();
+    updateKillboard();
+    updateEventboard();
+    updateReplayPanels();
+    updateUrlReplayParams(replayData.replayName, replayData.archive);
+    setReplayStatus(`Replay parsed (${replayData.source}). Matching map...`);
+    attemptMapAutoloadForReplay();
+  }
+};
+
+loaderWorker.onmessage = (event: MessageEvent<MapWorkerResponse>) => {
   const msg = event.data;
 
   if (msg.type === "progress") {
@@ -345,6 +1349,9 @@ loaderWorker.onmessage = (event: MessageEvent<WorkerResponse>) => {
     const data = msg as WorkerMapLoadedMessage;
     isLoading = false;
     applyLoadedMap(data.map.name, data.terrain, data.objects, data.map.satelliteTiles);
+    if (replayPendingStart) {
+      startReplayIfReady();
+    }
     if (data.map.satelliteTiles > 0) {
       loaderWorker.postMessage({
         type: "generate_satellite",
@@ -397,36 +1404,48 @@ function setMaps(files: File[]) {
   mapSelect.disabled = false;
   btnLoadMap.disabled = false;
 
+  let autoMapTriggered = false;
   const autoTarget = pendingAutoMap;
   if (autoTarget) {
     const matched = mapFiles.find((entry) => entry.mapName.toLowerCase() === autoTarget);
     if (matched) {
       mapSelect.value = matched.id;
       void loadMapFile(matched.file, matched.relativePath);
-      return;
+      autoMapTriggered = true;
+    } else {
+      setStatus(`Found ${mapFiles.length} maps. Auto-load target "${autoTarget}" not found.`);
     }
-    setStatus(`Found ${mapFiles.length} maps. Auto-load target "${autoTarget}" not found.`);
-    return;
   }
 
-  setStatus(`Found ${mapFiles.length} maps. Select one and click Load Map.`);
+  if (!autoMapTriggered && (!replayData || !replayPendingStart)) {
+    setStatus(`Found ${mapFiles.length} maps. Select one and click Load Map.`);
+  }
+
+  if (replayData && replayPendingStart) {
+    attemptMapAutoloadForReplay();
+  }
 }
 
 async function loadMapFile(file: File, displayName: string) {
   if (isLoading) return;
   isLoading = true;
 
-  setStatus(`Reading ${displayName}...`);
-  const buffer = await file.arrayBuffer();
+  try {
+    setStatus(`Reading ${displayName}...`);
+    const buffer = await file.arrayBuffer();
 
-  loaderWorker.postMessage(
-    {
-      type: "load_map",
-      fileName: displayName,
-      fileBytes: buffer,
-    },
-    [buffer]
-  );
+    loaderWorker.postMessage(
+      {
+        type: "load_map",
+        fileName: displayName,
+        fileBytes: buffer,
+      },
+      [buffer]
+    );
+  } catch (err: unknown) {
+    isLoading = false;
+    setStatus(`Error reading map file: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // --- UI Bindings ---
@@ -461,6 +1480,81 @@ btnLoadMap.addEventListener("click", () => {
   const selected = mapFiles.find((entry) => entry.id === mapSelect.value);
   if (!selected) return;
   void loadMapFile(selected.file, selected.relativePath);
+  if (replayPendingStart) {
+    replayWaitingForMap = true;
+    setReplayStatus("Loading selected map for replay...");
+  }
+});
+
+btnFetchReplays.addEventListener("click", () => {
+  loadReplayList();
+});
+
+replayServerFilter.addEventListener("change", () => {
+  renderReplaySelectOptions();
+});
+
+btnLoadReplay.addEventListener("click", () => {
+  loadSelectedReplay();
+});
+
+replayPlayBtn.addEventListener("click", () => {
+  if (!replayData) return;
+  replayPlaying = true;
+  updateReplayPanels();
+});
+
+replayPauseBtn.addEventListener("click", () => {
+  replayPlaying = false;
+  updateReplayPanels();
+});
+
+replaySeekInput.addEventListener("input", () => {
+  if (!replayData) return;
+  replayPlaying = false;
+  setReplayTime(Number(replaySeekInput.value), replayPinKillsInput.checked);
+  updateReplayPanels();
+});
+
+replaySpeedSelect.addEventListener("change", () => {
+  localStorage.setItem("replay_speed", replaySpeedSelect.value);
+});
+
+replayPinKillsInput.addEventListener("change", () => {
+  if (!replayData) return;
+  setReplayTime(replayCurrentTimeSec, replayPinKillsInput.checked);
+});
+
+for (const [el, key] of [
+  [replayFilterMessages, "messages"],
+  [replayFilterKills, "kills"],
+  [replayFilterHits, "hits"],
+  [replayFilterMedical, "medical"],
+] as const) {
+  el.addEventListener("change", () => {
+    replayEventFilter[key] = el.checked;
+    updateEventboard();
+  });
+}
+
+replayKillboardEl.addEventListener("click", (event) => {
+  const target = event.target as HTMLElement;
+  const row = target.closest<HTMLButtonElement>(".kb-row");
+  if (!row) return;
+  const unitId = Number(row.dataset.unitId || 0);
+  if (!Number.isFinite(unitId) || unitId <= 0) return;
+  focusReplayUnit(unitId);
+});
+
+replayEventboardEl.addEventListener("click", (event) => {
+  const target = event.target as HTMLElement;
+  const row = target.closest<HTMLButtonElement>(".ev-row");
+  if (!row) return;
+  const time = Number(row.dataset.time || 0);
+  if (!Number.isFinite(time)) return;
+  replayPlaying = false;
+  setReplayTime(time, replayPinKillsInput.checked);
+  updateReplayPanels();
 });
 
 // --- Render Loop ---
@@ -545,6 +1639,33 @@ function updateMinimap() {
     minimapCtx.lineWidth = 2;
     minimapCtx.stroke();
   }
+
+  if (replayReady) {
+    for (const line of replayLines) {
+      const sx = (line.fromX / currentMapSize) * size;
+      const sy = (1 - line.fromZ / currentMapSize) * size;
+      const ex = (line.toX / currentMapSize) * size;
+      const ey = (1 - line.toZ / currentMapSize) * size;
+      minimapCtx.beginPath();
+      minimapCtx.moveTo(sx, sy);
+      minimapCtx.lineTo(ex, ey);
+      minimapCtx.strokeStyle = line.kind === "kill" ? "rgba(255,80,80,0.7)" : "rgba(255,255,255,0.35)";
+      minimapCtx.lineWidth = line.kind === "kill" ? 1.5 : 1;
+      minimapCtx.stroke();
+    }
+
+    for (const visual of replayVisuals.values()) {
+      if (!visual.mesh.visible) continue;
+      const vx = visual.mesh.position.x;
+      const vz = visual.mesh.position.z;
+      const pxUnit = (vx / currentMapSize) * size;
+      const pyUnit = (1 - vz / currentMapSize) * size;
+      minimapCtx.beginPath();
+      minimapCtx.arc(pxUnit, pyUnit, 2.5, 0, Math.PI * 2);
+      minimapCtx.fillStyle = `#${sideColor(visual.side).toString(16).padStart(6, "0")}`;
+      minimapCtx.fill();
+    }
+  }
 }
 
 minimapCanvas.addEventListener("click", (e) => {
@@ -567,6 +1688,9 @@ minimapCanvas.addEventListener("mousedown", (e) => {
 planPanel.addEventListener("mousedown", (e) => {
   e.stopPropagation();
 });
+replayPanel.addEventListener("mousedown", (e) => {
+  e.stopPropagation();
+});
 planToggle.addEventListener("mousedown", (e) => {
   e.stopPropagation();
 });
@@ -574,6 +1698,24 @@ planToggle.addEventListener("mousedown", (e) => {
 function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
+
+  if (replayReady && replayData) {
+    if (replayPlaying) {
+      const speed = Number(replaySpeedSelect.value) || 1;
+      const next = replayCurrentTimeSec + dt * speed;
+      const max = replayData.frameTimes[replayData.frameTimes.length - 1] || 0;
+      setReplayTime(next, true);
+      if (next >= max) {
+        replayPlaying = false;
+        updateReplayPanels();
+      }
+    } else {
+      updateReplayVisuals(replayCurrentTimeSec);
+      updateReplayPanels();
+    }
+    updateReplayLines(dt);
+  }
+
   flyCamera.update(dt);
   hudEl.textContent = flyCamera.getInfo();
   renderer.render(scene, camera);
@@ -589,3 +1731,11 @@ window.addEventListener("resize", () => {
 });
 
 setStatus("Pick a folder with map files (or pick files) to start.");
+setReplayStatus(
+  DEPLOY_REPLAY_PROXY_URL
+    ? "Fetch replay list to begin. Deployment proxy is configured."
+    : "Fetch replay list to begin."
+);
+if (pendingAutoReplay) {
+  loadReplayList();
+}

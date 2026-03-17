@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { terrainSampleIndexX, textureUFromGridX } from "./map-coords";
 
 export interface TerrainData {
   gridWidth: number;
@@ -59,7 +60,8 @@ export function createTerrain(data: TerrainData): THREE.Group {
           const gz = (startZ + z) * step;
           const clampX = Math.min(gx, gridWidth - 1);
           const clampZ = Math.min(gz, gridHeight - 1);
-          const idx = clampZ * gridWidth + clampX;
+          const sampleX = terrainSampleIndexX(clampX, gridWidth);
+          const idx = clampZ * gridWidth + sampleX;
           const elevation = elevations[idx] || 0;
 
           const vi = (z * w + x) * 3;
@@ -69,8 +71,8 @@ export function createTerrain(data: TerrainData): THREE.Group {
 
           // UV coordinates (0..1 across entire map)
           const ui = (z * w + x) * 2;
-          uvs[ui] = gx / (gridWidth - 1);
-          uvs[ui + 1] = gz / (gridHeight - 1);
+          uvs[ui] = textureUFromGridX(clampX, gridWidth);
+          uvs[ui + 1] = clampZ / (gridHeight - 1);
 
           // Hypsometric color scheme
           const t = elevRange > 0 ? (elevation - elevationMin) / elevRange : 0;
