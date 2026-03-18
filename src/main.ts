@@ -48,9 +48,18 @@ scene.add(gridHelper);
 
 const hudEl = document.getElementById("hud")!;
 const statusEl = document.getElementById("status")!;
+const controlsHelpEl = document.getElementById("controls-help")!;
+const DEFAULT_CONTROLS_HELP =
+  "WASD - Движение | QE - Вверх/вниз | Мышь - Осмотр | Shift - Ускорение | Колесо - Скорость | P - Режим плана";
+const FOLLOW_CONTROLS_HELP =
+  "Режим слежения: Мышь - Угол камеры (после клика по сцене) | Колесо - Дистанция | 📷 - Открепить камеру";
 
 function setStatus(text: string) {
   statusEl.textContent = text;
+}
+
+function updateControlsHelp() {
+  controlsHelpEl.textContent = replayFollowUnitId === null ? DEFAULT_CONTROLS_HELP : FOLLOW_CONTROLS_HELP;
 }
 
 // --- Worker ---
@@ -497,6 +506,16 @@ interface MissionMarkerRender {
   color: string;
 }
 
+interface ReplayUnitBreakdown {
+  killed: Map<number, number>;
+  killedBy: Map<number, number>;
+  damageDone: number;
+  damageHits: number;
+  fatalHits: number;
+  healDone: number;
+  healActions: number;
+}
+
 let replayRows: ReplayRowEntry[] = [];
 let replayVisibleRows: ReplayRowEntry[] = [];
 let replayData: ReplayData | null = null;
@@ -519,6 +538,9 @@ let replayEventFilter = {
 let replayEventboardLastSignature = "";
 let replayEventboardManualScrollWhilePaused = false;
 let replayEventboardProgrammaticScroll = false;
+let replayKillboardExpandedUnitId: number | null = null;
+let replayFollowUnitId: number | null = null;
+updateControlsHelp();
 let selectedReplayRow: ReplayListItem | null = null;
 let missionDetails: MissionDetails | null = null;
 let missionIsLoading = false;
@@ -531,6 +553,17 @@ scene.add(replayGroup);
 const replayLines: ReplayLine[] = [];
 const missionGroup = new THREE.Group();
 scene.add(missionGroup);
+const replayFollowOffset = new THREE.Vector3(60, 120, 60);
+const REPLAY_FOLLOW_MIN_DISTANCE = 20;
+const REPLAY_FOLLOW_MAX_DISTANCE = 900;
+const REPLAY_FOLLOW_MIN_PITCH = -1.25;
+const REPLAY_FOLLOW_MAX_PITCH = 1.25;
+const REPLAY_FOLLOW_MOUSE_SENSITIVITY = 0.002;
+const REPLAY_FOLLOW_WHEEL_IN_FACTOR = 0.88;
+const REPLAY_FOLLOW_WHEEL_OUT_FACTOR = 1.12;
+let replayFollowDistance = replayFollowOffset.length();
+let replayFollowYaw = Math.atan2(replayFollowOffset.x, replayFollowOffset.z);
+let replayFollowPitch = Math.asin(replayFollowOffset.y / Math.max(1, replayFollowDistance));
 
 const SIDE_COLORS: Record<number, number> = {
   0: 0x3a8fff,
@@ -1102,6 +1135,9 @@ function clearReplayRuntime() {
   replayPlaying = false;
   replayEventboardLastSignature = "";
   replayEventboardManualScrollWhilePaused = false;
+  replayKillboardExpandedUnitId = null;
+  replayFollowUnitId = null;
+  updateControlsHelp();
 }
 
 function sideColor(side: number): number {
@@ -1469,10 +1505,57 @@ function setReplayTime(timeSec: number) {
   updateReplayPanels();
 }
 
-function focusReplayUnit(unitId: number) {
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function applyFollowCameraToTarget(targetX: number, targetY: number, targetZ: number) {
+  const cosPitch = Math.cos(replayFollowPitch);
+  const offsetX = Math.sin(replayFollowYaw) * cosPitch * replayFollowDistance;
+  const offsetY = Math.sin(replayFollowPitch) * replayFollowDistance;
+  const offsetZ = Math.cos(replayFollowYaw) * cosPitch * replayFollowDistance;
+  camera.position.set(targetX + offsetX, targetY + offsetY, targetZ + offsetZ);
+  camera.lookAt(targetX, targetY, targetZ);
+}
+
+function moveCameraToReplayUnit(unitId: number) {
   const pos = resolveReplayWorldPosition(unitId, replayCurrentTimeSec);
   if (!pos) return;
-  camera.position.set(pos.x + 60, pos.y + 120, pos.z + 60);
+  const targetX = pos.x;
+  const targetY = pos.y + 8;
+  const targetZ = pos.z;
+  const deltaX = camera.position.x - targetX;
+  const deltaY = camera.position.y - targetY;
+  const deltaZ = camera.position.z - targetZ;
+  const length = Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
+  const fallbackDistance = replayFollowOffset.length();
+  const distance = length > 1 ? length : fallbackDistance;
+  replayFollowDistance = clampNumber(distance, REPLAY_FOLLOW_MIN_DISTANCE, REPLAY_FOLLOW_MAX_DISTANCE);
+  replayFollowYaw = Math.atan2(length > 1 ? deltaX : replayFollowOffset.x, length > 1 ? deltaZ : replayFollowOffset.z);
+  const pitchSource = length > 1 ? deltaY : replayFollowOffset.y;
+  replayFollowPitch = clampNumber(
+    Math.asin(clampNumber(pitchSource / Math.max(1, distance), -0.98, 0.98)),
+    REPLAY_FOLLOW_MIN_PITCH,
+    REPLAY_FOLLOW_MAX_PITCH
+  );
+  applyFollowCameraToTarget(targetX, targetY, targetZ);
+}
+
+function updateFollowCamera(): boolean {
+  if (!replayReady || replayFollowUnitId === null) return false;
+  const pos = resolveReplayWorldPosition(replayFollowUnitId, replayCurrentTimeSec);
+  if (!pos) return false;
+  applyFollowCameraToTarget(pos.x, pos.y + 8, pos.z);
+  return true;
+}
+
+function setReplayFollowUnit(unitId: number | null) {
+  replayFollowUnitId = unitId;
+  if (replayFollowUnitId !== null) {
+    moveCameraToReplayUnit(replayFollowUnitId);
+  }
+  updateControlsHelp();
+  updateKillboard();
 }
 
 function escapeHtml(text: string): string {
@@ -1489,6 +1572,63 @@ function eventUnitLabel(unitId: number): { nameHtml: string; sideClass: string }
   const name = unit?.playerName || unit?.name || `#${unitId}`;
   const sideClass = `unit-side-${unitSideCss(unit?.side ?? 4)}`;
   return { nameHtml: escapeHtml(name), sideClass };
+}
+
+function replayUnitBreakdown(unitId: number): ReplayUnitBreakdown {
+  const killed = new Map<number, number>();
+  const killedBy = new Map<number, number>();
+  let damageDone = 0;
+  let damageHits = 0;
+  let fatalHits = 0;
+  let healDone = 0;
+  let healActions = 0;
+
+  if (!replayData) {
+    return { killed, killedBy, damageDone, damageHits, fatalHits, healDone, healActions };
+  }
+
+  for (const event of replayData.events) {
+    if (event.type === 4) {
+      if (event.killerId === unitId && event.victimId > 0) {
+        killed.set(event.victimId, (killed.get(event.victimId) || 0) + 1);
+      }
+      if (event.victimId === unitId && event.killerId > 0) {
+        killedBy.set(event.killerId, (killedBy.get(event.killerId) || 0) + 1);
+      }
+      continue;
+    }
+    if (event.type === 5 && event.sourceId === unitId) {
+      damageDone += Math.max(0, event.damage || 0);
+      damageHits++;
+      if (event.fatal) fatalHits++;
+      continue;
+    }
+    if (event.type === 7 && event.actorId === unitId && event.success) {
+      healActions++;
+      healDone += Math.max(0, event.amount || 0);
+    }
+  }
+
+  return { killed, killedBy, damageDone, damageHits, fatalHits, healDone, healActions };
+}
+
+function renderUnitCountMapHtml(prefix: string, data: Map<number, number>, empty: string): string {
+  const items = Array.from(data.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (items.length === 0) {
+    return `<div class="kb-detail-line"><span class="kb-detail-label">${escapeHtml(prefix)}:</span> ${escapeHtml(empty)}</div>`;
+  }
+  const body = items
+    .map(([id, count]) => {
+      const unit = eventUnitLabel(id);
+      return `<span class="${unit.sideClass}">${unit.nameHtml}</span>${count > 1 ? ` x${count}` : ""}`;
+    })
+    .join(", ");
+  return `<div class="kb-detail-line"><span class="kb-detail-label">${escapeHtml(prefix)}:</span> ${body}</div>`;
+}
+
+function formatMetric(value: number): string {
+  if (Number.isInteger(value)) return String(value);
+  return value.toFixed(2).replace(/\.?0+$/, "");
 }
 
 function describeReplayEventHtml(event: ReplayTimelineEvent): string {
@@ -1564,16 +1704,41 @@ function updateKillboard() {
     .sort((a, b) => b.kills - a.kills || a.deaths - b.deaths)
     .slice(0, 80);
 
+  if (replayKillboardExpandedUnitId !== null && !rows.some((row) => row.id === replayKillboardExpandedUnitId)) {
+    replayKillboardExpandedUnitId = null;
+  }
+  let controlsHintNeedsUpdate = false;
+  if (replayFollowUnitId !== null && !rows.some((row) => row.id === replayFollowUnitId)) {
+    replayFollowUnitId = null;
+    controlsHintNeedsUpdate = true;
+  }
+  if (controlsHintNeedsUpdate) {
+    updateControlsHelp();
+  }
+
   replayKillboardEl.innerHTML = rows
     .map((row) => {
       const unit = replayUnitsById.get(row.id);
       const name = unit?.playerName || unit?.name || `#${row.id}`;
       const side = unitSideCss(unit?.side ?? 4);
+      const expanded = replayKillboardExpandedUnitId === row.id;
+      const following = replayFollowUnitId === row.id;
+      const breakdown = expanded ? replayUnitBreakdown(row.id) : null;
+      const detailsHtml = breakdown
+        ? [
+            renderUnitCountMapHtml("Убил", breakdown.killed, "никого"),
+            renderUnitCountMapHtml("Убит кем", breakdown.killedBy, "не был убит"),
+            `<div class="kb-detail-line"><span class="kb-detail-label">Урон:</span> ${formatMetric(breakdown.damageDone)} (${breakdown.damageHits} попад., ${breakdown.fatalHits} фат.)</div>`,
+            `<div class="kb-detail-line"><span class="kb-detail-label">Лечение:</span> ${formatMetric(breakdown.healDone)} (${breakdown.healActions} действий)</div>`,
+          ].join("")
+        : "";
       return (
-        `<button class="kb-row unit-side-${side}" data-unit-id="${row.id}" type="button">` +
-        `<span class="kb-name">${name}</span>` +
+        `<div class="kb-row ${expanded ? "active" : ""} unit-side-${side}" data-unit-id="${row.id}">` +
+        `<button class="kb-name-btn" data-action="expand" data-unit-id="${row.id}" type="button">${escapeHtml(name)}</button>` +
         `<span class="kb-stats">${row.kills}/${row.deaths}${row.teamkills > 0 ? ` tk:${row.teamkills}` : ""}</span>` +
-        `</button>`
+        `<button class="kb-cam-btn ${following ? "active" : ""}" data-action="follow" data-unit-id="${row.id}" type="button" title="${following ? "Открепить камеру" : "Следить камерой"}">📷</button>` +
+        `</div>` +
+        (expanded ? `<div class="kb-details">${detailsHtml}</div>` : "")
       );
     })
     .join("");
@@ -2328,11 +2493,20 @@ for (const [el, key] of [
 
 replayKillboardEl.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
-  const row = target.closest<HTMLButtonElement>(".kb-row");
-  if (!row) return;
-  const unitId = Number(row.dataset.unitId || 0);
+  const actionEl = target.closest<HTMLElement>("[data-action]");
+  const rowEl = target.closest<HTMLElement>(".kb-row");
+  const unitId = Number((actionEl?.dataset.unitId || rowEl?.dataset.unitId || "0"));
   if (!Number.isFinite(unitId) || unitId <= 0) return;
-  focusReplayUnit(unitId);
+  const action = actionEl?.dataset.action;
+
+  if (action === "follow") {
+    setReplayFollowUnit(replayFollowUnitId === unitId ? null : unitId);
+    return;
+  }
+  if (action !== "expand") return;
+
+  replayKillboardExpandedUnitId = replayKillboardExpandedUnitId === unitId ? null : unitId;
+  updateKillboard();
 });
 
 replayEventboardEl.addEventListener("click", (event) => {
@@ -2510,6 +2684,33 @@ planToggle.addEventListener("mousedown", (e) => {
   e.stopPropagation();
 });
 
+document.addEventListener("mousemove", (event) => {
+  if (replayFollowUnitId === null) return;
+  if (document.pointerLockElement !== renderer.domElement) return;
+  replayFollowYaw -= event.movementX * REPLAY_FOLLOW_MOUSE_SENSITIVITY;
+  replayFollowPitch = clampNumber(
+    replayFollowPitch - event.movementY * REPLAY_FOLLOW_MOUSE_SENSITIVITY,
+    REPLAY_FOLLOW_MIN_PITCH,
+    REPLAY_FOLLOW_MAX_PITCH
+  );
+});
+
+renderer.domElement.addEventListener(
+  "wheel",
+  (event) => {
+    if (replayFollowUnitId === null) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const factor = event.deltaY > 0 ? REPLAY_FOLLOW_WHEEL_OUT_FACTOR : REPLAY_FOLLOW_WHEEL_IN_FACTOR;
+    replayFollowDistance = clampNumber(
+      replayFollowDistance * factor,
+      REPLAY_FOLLOW_MIN_DISTANCE,
+      REPLAY_FOLLOW_MAX_DISTANCE
+    );
+  },
+  { passive: false, capture: true }
+);
+
 function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
@@ -2531,8 +2732,16 @@ function animate() {
     updateReplayLines(dt);
   }
 
-  flyCamera.update(dt);
-  hudEl.textContent = flyCamera.getInfo();
+  const isFollowing = updateFollowCamera();
+  if (!isFollowing) {
+    flyCamera.update(dt);
+  }
+  const followName =
+    replayFollowUnitId !== null
+      ? replayUnitsById.get(replayFollowUnitId)?.playerName || replayUnitsById.get(replayFollowUnitId)?.name || `#${replayFollowUnitId}`
+      : "";
+  const followInfo = followName ? ` | Камера: ${followName}` : "";
+  hudEl.textContent = `${flyCamera.getInfo()}${followInfo}`;
   renderer.render(scene, camera);
   updateMinimap();
 }

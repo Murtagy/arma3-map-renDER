@@ -360,10 +360,8 @@
       }
       .kb-row, .ev-row {
         width: 100%;
-        border: none;
         background: rgba(255,255,255,0.04);
         color: #ddd;
-        cursor: pointer;
         font-family: monospace;
         font-size: 11px;
         border-radius: 3px;
@@ -375,20 +373,66 @@
         background: rgba(127,219,202,0.16);
       }
       .kb-row {
-        display: flex;
-        justify-content: space-between;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 6px;
         align-items: center;
       }
-      .kb-name {
+      .kb-row.active {
+        background: rgba(127,219,202,0.22);
+      }
+      .kb-name-btn {
+        border: none;
+        background: transparent;
+        color: inherit;
+        padding: 0;
+        margin: 0;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        margin-right: 8px;
+      }
+      .kb-cam-btn {
+        border: 1px solid rgba(255,255,255,0.24);
+        border-radius: 3px;
+        background: rgba(255,255,255,0.08);
+        color: #d7dee6;
+        font-size: 11px;
+        line-height: 1;
+        padding: 2px 5px;
+        cursor: pointer;
+      }
+      .kb-cam-btn:hover {
+        background: rgba(127,219,202,0.22);
+      }
+      .kb-cam-btn.active {
+        border-color: #7fdbca;
+        color: #7fdbca;
       }
       .kb-stats {
         color: #a8b2bb;
       }
+      .kb-details {
+        margin: -1px 0 5px;
+        padding: 4px 6px 5px;
+        border: 1px solid rgba(127,219,202,0.2);
+        border-radius: 0 0 4px 4px;
+        background: rgba(12,20,20,0.55);
+      }
+      .kb-detail-line {
+        color: #b8c0c9;
+        line-height: 1.3;
+        margin: 2px 0;
+        word-break: break-word;
+      }
+      .kb-detail-label {
+        color: #7fdbca;
+      }
       .ev-row {
+        border: none;
+        cursor: pointer;
         display: grid;
         grid-template-columns: 74px 1fr;
         gap: 6px;
