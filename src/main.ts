@@ -1776,7 +1776,7 @@ function describeReplayEventHtml(event: ReplayTimelineEvent): string {
   if (event.type === 4) {
     const killer = eventUnitLabel(event.killerId);
     const victim = eventUnitLabel(event.victimId);
-    const dist = event.distance > 0 ? ` (${Math.round(event.distance)}m)` : "";
+    const dist = event.distance > 0 ? ` | дистанция: ${Math.round(event.distance)}м` : "";
     return (
       `<span class="${killer.sideClass}">${killer.nameHtml}</span> -> ` +
       `<span class="${victim.sideClass}">${victim.nameHtml}</span> ` +
@@ -1786,10 +1786,11 @@ function describeReplayEventHtml(event: ReplayTimelineEvent): string {
   if (event.type === 5) {
     const source = eventUnitLabel(event.sourceId);
     const target = eventUnitLabel(event.targetId);
+    const dist = event.distance > 0 ? ` | дистанция: ${Math.round(event.distance)}м` : "";
     return (
       `<span class="${source.sideClass}">${source.nameHtml}</span> попал в ` +
       `<span class="${target.sideClass}">${target.nameHtml}</span> ` +
-      `(${escapeHtml(event.weapon)})`
+      `(${escapeHtml(event.weapon)}${escapeHtml(dist)})`
     );
   }
   if (event.type === 7) {
