@@ -233,6 +233,12 @@
         font-size: 11px;
         white-space: pre-wrap;
       }
+      #mission-status {
+        margin-top: 4px;
+        color: #d0b27d;
+        font-size: 11px;
+        white-space: pre-wrap;
+      }
       #replay-panel {
         position: absolute;
         top: 270px;
@@ -408,7 +414,7 @@
         font-size: 11px;
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-CzvGfCEo.js"></script>
+    <script type="module" crossorigin src="/assets/index-CH0RVju2.js"></script>
   </head>
   <body>
     <details id="ui-shell" open>
@@ -451,11 +457,19 @@
           <div class="row" style="margin-top:6px;">
             <button id="btn-load-replay" disabled>Загрузить реплей</button>
           </div>
+          <div class="row" style="margin-top:6px;">
+            <button id="btn-load-mission" disabled>Загрузить детали миссии</button>
+          </div>
+          <div class="replay-filter-row" style="margin-top:4px;">
+            <label><input type="checkbox" id="mission-show-markers" checked /> маркеры миссии</label>
+            <label><input type="checkbox" id="mission-show-objects" checked /> объекты миссии</label>
+          </div>
           <div id="replay-proxy-row">
             <label>URL прокси (переопределить):</label>
             <input id="replay-proxy" type="text" placeholder="https://proxy.example/?url={url}" />
           </div>
           <div id="replay-status">Чтобы начать, получите список реплеев.</div>
+          <div id="mission-status">Детали миссии не загружены.</div>
         </details>
 
         <div class="hint">Подсказка: можно выбирать корневую папку игры. Также поддерживается <code>?map=map_name</code> для автозагрузки карты.</div>

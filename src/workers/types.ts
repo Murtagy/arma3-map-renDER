@@ -115,6 +115,46 @@ export interface ReplayHeader {
   initialMarkers: unknown[];
 }
 
+export interface MissionMarkerDef {
+  id: number;
+  layer: string;
+  name: string;
+  markerType: string;
+  type: string;
+  colorName: string;
+  fillName: string;
+  alpha: number;
+  a: number;
+  b: number;
+  angleDeg: number;
+  drawBorder: boolean;
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface MissionObjectDef {
+  id: number;
+  layer: string;
+  type: string;
+  x: number;
+  y: number;
+  z: number;
+  angleDeg: number;
+}
+
+export interface MissionDetails {
+  replayName: string;
+  mapKey: string;
+  missionName: string;
+  sourceName: string;
+  missionFile: string;
+  missionUrl: string;
+  source: "direct" | "proxy";
+  markers: MissionMarkerDef[];
+  objects: MissionObjectDef[];
+}
+
 export type ReplayUnitKind = "unit" | "vehicle";
 
 export interface ReplayUnitDef {
@@ -218,7 +258,15 @@ export type LoadReplayDetailRequest = {
   proxyUrl?: string;
 };
 
-export type ReplayWorkerRequest = LoadReplayListRequest | LoadReplayDetailRequest;
+export type LoadMissionDetailsRequest = {
+  type: "load_mission_details";
+  replayName: string;
+  missionName?: string;
+  mapKey?: string;
+  proxyUrl?: string;
+};
+
+export type ReplayWorkerRequest = LoadReplayListRequest | LoadReplayDetailRequest | LoadMissionDetailsRequest;
 
 export type ReplayListLoadedMessage = {
   type: "replay_list_loaded";
@@ -231,14 +279,20 @@ export type ReplayParsedMessage = {
   replay: ReplayData;
 };
 
+export type MissionDetailsLoadedMessage = {
+  type: "mission_details_loaded";
+  mission: MissionDetails;
+};
+
 export type ReplayProgressMessage = {
   type: "replay_progress";
-  stage: "fetch_list" | "fetch_replay" | "parse_replay";
+  stage: "fetch_list" | "fetch_replay" | "parse_replay" | "fetch_mission" | "parse_mission";
   detail?: string;
 };
 
 export type ReplayWorkerResponse =
   | ReplayListLoadedMessage
   | ReplayParsedMessage
+  | MissionDetailsLoadedMessage
   | ReplayProgressMessage
   | WorkerErrorMessage;

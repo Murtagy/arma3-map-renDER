@@ -21,19 +21,25 @@ export default {
         return jsonError("Invalid target URL", 400, request);
       }
 
-      // Lock proxy scope to replay API only.
-      if (target.protocol !== "https:" || target.hostname !== "replay.tsgames.ru") {
+      if (target.protocol !== "https:") {
         return jsonError("Target host is not allowed", 403, request);
       }
-      if (!target.pathname.endsWith("/ajax.php")) {
-        return jsonError("Only /ajax.php is allowed", 403, request);
+
+      const isReplayApi = target.hostname === "replay.tsgames.ru" && target.pathname.endsWith("/ajax.php");
+      const isMissionFile =
+        target.hostname === "tsgames.ru" &&
+        target.pathname.startsWith("/files/missions/") &&
+        target.pathname.toLowerCase().endsWith(".pbo");
+
+      if (!isReplayApi && !isMissionFile) {
+        return jsonError("Target URL is not allowed", 403, request);
       }
 
       const upstream = await fetch(target.toString(), {
         method: "GET",
         headers: {
           "User-Agent": "arma3-map-render-replay-proxy/1.0",
-          "Accept": "application/json, text/plain, */*",
+          "Accept": isReplayApi ? "application/json, text/plain, */*" : "application/octet-stream, */*",
         },
       });
 
@@ -43,7 +49,7 @@ export default {
       headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
       headers.set("Access-Control-Allow-Headers", "Content-Type");
       headers.set("Vary", "Origin");
-      headers.set("Cache-Control", "public, max-age=30");
+      headers.set("Cache-Control", isReplayApi ? "public, max-age=30" : "public, max-age=300");
 
       return new Response(body, {
         status: upstream.status,

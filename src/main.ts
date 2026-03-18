@@ -11,6 +11,9 @@ import type {
   WorkerSatelliteReadyMessage,
   WorkerTerrainData,
   WorkerObjectsData,
+  MissionDetails,
+  MissionMarkerDef,
+  MissionObjectDef,
   ReplayData,
   ReplayListItem,
   ReplayTimelineEvent,
@@ -487,6 +490,13 @@ interface ReplayLine {
 
 type ReplayBoardTab = "kills" | "events";
 
+interface MissionMarkerRender {
+  marker: MissionMarkerDef;
+  worldX: number;
+  worldZ: number;
+  color: string;
+}
+
 let replayRows: ReplayRowEntry[] = [];
 let replayVisibleRows: ReplayRowEntry[] = [];
 let replayData: ReplayData | null = null;
@@ -509,12 +519,18 @@ let replayEventFilter = {
 let replayEventboardLastSignature = "";
 let replayEventboardManualScrollWhilePaused = false;
 let replayEventboardProgrammaticScroll = false;
+let selectedReplayRow: ReplayListItem | null = null;
+let missionDetails: MissionDetails | null = null;
+let missionIsLoading = false;
+let missionMarkersRender: MissionMarkerRender[] = [];
 
 const replayRuntimeStates = new Map<number, RuntimeUnitState>();
 const replayVisuals = new Map<number, RuntimeUnitVisual>();
 const replayGroup = new THREE.Group();
 scene.add(replayGroup);
 const replayLines: ReplayLine[] = [];
+const missionGroup = new THREE.Group();
+scene.add(missionGroup);
 
 const SIDE_COLORS: Record<number, number> = {
   0: 0x3a8fff,
@@ -539,7 +555,11 @@ const replayServerFilter = document.getElementById("replay-server-filter") as HT
 const btnFetchReplays = document.getElementById("btn-fetch-replays") as HTMLButtonElement;
 const replaySelect = document.getElementById("replay-select") as HTMLSelectElement;
 const btnLoadReplay = document.getElementById("btn-load-replay") as HTMLButtonElement;
+const btnLoadMission = document.getElementById("btn-load-mission") as HTMLButtonElement;
+const missionShowMarkersInput = document.getElementById("mission-show-markers") as HTMLInputElement;
+const missionShowObjectsInput = document.getElementById("mission-show-objects") as HTMLInputElement;
 const replayStatusEl = document.getElementById("replay-status") as HTMLElement;
+const missionStatusEl = document.getElementById("mission-status") as HTMLElement;
 const replayMetaEl = document.getElementById("replay-meta") as HTMLElement;
 const replayPanel = document.getElementById("replay-panel") as HTMLElement;
 const replayPlayBtn = document.getElementById("btn-replay-play") as HTMLButtonElement;
@@ -563,6 +583,9 @@ let replayBoardTab: ReplayBoardTab = localStorage.getItem("replay_board_tab") ==
 
 replayProxyInput.value = localStorage.getItem("replay_proxy_url") || DEPLOY_REPLAY_PROXY_URL;
 replaySpeedSelect.value = localStorage.getItem("replay_speed") || "1";
+missionShowMarkersInput.checked = localStorage.getItem("mission_show_markers") !== "0";
+missionShowObjectsInput.checked = localStorage.getItem("mission_show_objects") !== "0";
+btnLoadMission.disabled = true;
 if (replayProxyInput.value.trim()) {
   replayProxyRow.style.display = "none";
 }
@@ -606,6 +629,10 @@ function setReplayStatus(text: string) {
   replayStatusEl.textContent = text;
 }
 
+function setMissionStatus(text: string) {
+  missionStatusEl.textContent = text;
+}
+
 function replaySourceLabel(source: string): string {
   if (source === "direct") return "напрямую";
   if (source === "proxy") return "через прокси";
@@ -616,6 +643,8 @@ function replayProgressStageLabel(stage: string): string {
   if (stage === "fetch_list") return "получение списка";
   if (stage === "fetch_replay") return "получение реплея";
   if (stage === "parse_replay") return "разбор реплея";
+  if (stage === "fetch_mission") return "загрузка миссии";
+  if (stage === "parse_mission") return "разбор миссии";
   return stage;
 }
 
@@ -635,6 +664,22 @@ function normalizeMapToken(value: string): string {
     .replace(/^(cup_|cwr3_|gm_|rhspk_|rhs_|uk3cb_|gm_)/, "")
     .replace(/_summer|_winter|_old|_s$/g, "")
     .replace(/[^a-z0-9]/g, "");
+}
+
+function missionMarkerColorCss(colorName: string): string {
+  const key = colorName.toLowerCase();
+  if (key.includes("blue")) return "#6db8ff";
+  if (key.includes("green")) return "#7de28c";
+  if (key.includes("red")) return "#ff7373";
+  if (key.includes("orange")) return "#ffb86a";
+  if (key.includes("yellow")) return "#ffd166";
+  if (key.includes("black")) return "#7f8a96";
+  return "#cccccc";
+}
+
+function missionMarkerColorHex(colorName: string): number {
+  const css = missionMarkerColorCss(colorName).replace("#", "");
+  return Number.parseInt(css, 16) || 0xcccccc;
 }
 
 function replayMapCandidates(data: ReplayData): string[] {
@@ -712,6 +757,7 @@ function clearCurrentMap() {
   if (currentTerrain) scene.remove(currentTerrain);
   if (currentWater) scene.remove(currentWater);
   if (currentObjects) scene.remove(currentObjects);
+  clearMissionOverlay();
   currentTerrainInfo = null;
   scene.remove(gridHelper);
 }
@@ -768,6 +814,7 @@ function applyLoadedMap(
   scene.add(currentObjects);
 
   currentMapName = mapName;
+  renderMissionOverlay();
   minimapCanvas.style.display = "block";
   updateUrlMapParam(mapName);
 
@@ -853,6 +900,155 @@ function sampleTerrainHeight(x: number, z: number): number {
   const hx0 = h00 + (h10 - h00) * tx;
   const hx1 = h01 + (h11 - h01) * tx;
   return hx0 + (hx1 - hx0) * tz;
+}
+
+function disposeGroupChildren(group: THREE.Group) {
+  while (group.children.length > 0) {
+    const child = group.children[group.children.length - 1];
+    group.remove(child);
+    child.traverse((node) => {
+      const mesh = node as THREE.Mesh;
+      if (mesh.geometry) {
+        mesh.geometry.dispose();
+      }
+      const material = (mesh as unknown as { material?: THREE.Material | THREE.Material[] }).material;
+      if (Array.isArray(material)) {
+        for (const m of material) m.dispose();
+      } else if (material) {
+        material.dispose();
+      }
+    });
+  }
+}
+
+function clearMissionOverlay() {
+  missionMarkersRender = [];
+  disposeGroupChildren(missionGroup);
+}
+
+function missionMapMatchesCurrentMap(): boolean {
+  if (!missionDetails || !currentMapName) return false;
+  const currentToken = normalizeMapToken(currentMapName);
+  const missionToken = normalizeMapToken(missionDetails.mapKey || "");
+  if (!currentToken || !missionToken) return false;
+  return missionToken === currentToken || missionToken.includes(currentToken) || currentToken.includes(missionToken);
+}
+
+function missionMarkerOpacity(marker: MissionMarkerDef): number {
+  if (marker.alpha > 0) {
+    return Math.max(0.08, Math.min(0.7, marker.alpha));
+  }
+  if (marker.drawBorder) return 0.45;
+  return 0.22;
+}
+
+function buildMissionMarkerPoints(marker: MissionMarkerDef, worldX: number, worldZ: number, y: number): THREE.Vector3[] {
+  const markerType = marker.markerType.toUpperCase();
+  const a = Math.max(1, marker.a || 20);
+  const b = Math.max(1, marker.b || a);
+  const yaw = mapDirDegToWorldYawRad(marker.angleDeg || 0);
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+
+  const points: THREE.Vector3[] = [];
+  if (markerType === "RECTANGLE") {
+    const corners: Array<[number, number]> = [
+      [-a, -b],
+      [a, -b],
+      [a, b],
+      [-a, b],
+      [-a, -b],
+    ];
+    for (const [dx, dz] of corners) {
+      const rx = dx * cos - dz * sin;
+      const rz = dx * sin + dz * cos;
+      points.push(new THREE.Vector3(worldX + rx, y, worldZ + rz));
+    }
+    return points;
+  }
+
+  const steps = 36;
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * Math.PI * 2;
+    const dx = Math.cos(t) * a;
+    const dz = Math.sin(t) * b;
+    const rx = dx * cos - dz * sin;
+    const rz = dx * sin + dz * cos;
+    points.push(new THREE.Vector3(worldX + rx, y, worldZ + rz));
+  }
+  return points;
+}
+
+function renderMissionOverlay() {
+  clearMissionOverlay();
+  if (!missionDetails || !currentMapName) return;
+  if (!missionMapMatchesCurrentMap()) {
+    setMissionStatus(
+      `Детали миссии загружены (${missionDetails.missionFile}), но карта не совпадает (${missionDetails.mapKey} != ${currentMapName}).`
+    );
+    return;
+  }
+
+  let renderedObjectsCount = 0;
+
+  if (missionShowMarkersInput.checked) {
+    for (const marker of missionDetails.markers) {
+      const worldX = mapXToWorldX(marker.x);
+      const worldZ = marker.z;
+      const colorCss = missionMarkerColorCss(marker.colorName);
+      const linePoints = buildMissionMarkerPoints(marker, worldX, worldZ, sampleTerrainHeight(worldX, worldZ) + 1.5);
+      const lineGeometry = new THREE.BufferGeometry().setFromPoints(linePoints);
+      const lineMaterial = new THREE.LineBasicMaterial({
+        color: missionMarkerColorHex(marker.colorName),
+        transparent: true,
+        opacity: missionMarkerOpacity(marker),
+      });
+      const line = new THREE.Line(lineGeometry, lineMaterial);
+      line.renderOrder = 1;
+      missionGroup.add(line);
+      missionMarkersRender.push({
+        marker,
+        worldX,
+        worldZ,
+        color: colorCss,
+      });
+    }
+  }
+
+  if (missionShowObjectsInput.checked && missionDetails.objects.length > 0) {
+    const objectLimit = 30000;
+    const count = Math.min(objectLimit, missionDetails.objects.length);
+    renderedObjectsCount = count;
+    const geometry = new THREE.BoxGeometry(1.4, 1.4, 2.8);
+    const material = new THREE.MeshBasicMaterial({
+      color: 0xffd166,
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+    });
+    const mesh = new THREE.InstancedMesh(geometry, material, count);
+    const tmp = new THREE.Object3D();
+    for (let i = 0; i < count; i++) {
+      const obj = missionDetails.objects[i];
+      tmp.position.set(mapXToWorldX(obj.x), obj.y + 0.7, obj.z);
+      tmp.rotation.set(0, mapDirDegToWorldYawRad(obj.angleDeg), 0);
+      tmp.updateMatrix();
+      mesh.setMatrixAt(i, tmp.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.renderOrder = 1;
+    missionGroup.add(mesh);
+  }
+
+  const objectRendered = missionShowObjectsInput.checked ? renderedObjectsCount : 0;
+  const markerRendered = missionShowMarkersInput.checked ? missionDetails.markers.length : 0;
+  const objectExtra =
+    missionShowObjectsInput.checked && missionDetails.objects.length > renderedObjectsCount
+      ? ` (показано ${renderedObjectsCount} из ${missionDetails.objects.length})`
+      : "";
+  setMissionStatus(
+    `Детали миссии: маркеры ${markerRendered}, объекты ${objectRendered}${objectExtra}. Файл: ${missionDetails.missionFile} (${replaySourceLabel(missionDetails.source)}).`
+  );
 }
 
 function clearReplayLines() {
@@ -1506,12 +1702,17 @@ function updateReplayMeta() {
     replayMetaEl.textContent = "";
     return;
   }
+  const missionExtra =
+    missionDetails && missionDetails.replayName === replayData.replayName
+      ? `Детали миссии: ${missionDetails.markers.length} маркеров, ${missionDetails.objects.length} объектов`
+      : "Детали миссии: не загружены";
   replayMetaEl.textContent = [
     `Реплей: ${replayData.replayName}`,
     `Карта: ${replayData.header.mapKey}`,
     `Миссия: ${replayData.header.missionName}`,
     `Источник: ${replaySourceLabel(replayData.source)}`,
     `Кадры: ${replayData.frameTimes.length}`,
+    missionExtra,
   ].join("\n");
 }
 
@@ -1552,6 +1753,7 @@ function renderReplaySelectOptions() {
   if (replayVisibleRows.length === 0) {
     replaySelect.disabled = true;
     btnLoadReplay.disabled = true;
+    btnLoadMission.disabled = true;
     replaySelect.innerHTML = '<option value="">-- для этого сервера реплеев нет --</option>';
     return;
   }
@@ -1577,6 +1779,7 @@ function setReplayRows(rows: ReplayListItem[]) {
     row,
   }));
   replayVisibleRows = [];
+  selectedReplayRow = null;
   renderReplayServerOptions();
   renderReplaySelectOptions();
 }
@@ -1596,9 +1799,15 @@ function loadSelectedReplay() {
   if (replayIsLoading) return;
   const selected = replayRows.find((entry) => entry.id === replaySelect.value);
   if (!selected) return;
+  selectedReplayRow = selected.row;
   replayIsLoading = true;
   replayReady = false;
   replayPlaying = false;
+  missionDetails = null;
+  missionIsLoading = false;
+  clearMissionOverlay();
+  setMissionStatus("Детали миссии не загружены.");
+  btnLoadMission.disabled = true;
   setReplayStatus(`Загрузка реплея ${selected.row.name}...`);
   replayWorker.postMessage({
     type: "load_replay_detail",
@@ -1608,16 +1817,43 @@ function loadSelectedReplay() {
   });
 }
 
+function loadMissionDetails() {
+  if (missionIsLoading || !replayData) return;
+  missionIsLoading = true;
+  btnLoadMission.disabled = true;
+  const missionName = selectedReplayRow?.missionName || replayData.header.missionName;
+  const mapKey = selectedReplayRow?.mapKey || replayData.header.mapKey;
+  setMissionStatus("Загрузка файла mission.pbo...");
+  replayWorker.postMessage({
+    type: "load_mission_details",
+    replayName: replayData.replayName,
+    missionName,
+    mapKey,
+    proxyUrl: getReplayProxyUrl(),
+  });
+}
+
 replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
   const msg = event.data;
   if (msg.type === "replay_progress") {
-    setReplayStatus(msg.detail || replayProgressStageLabel(msg.stage));
+    if (msg.stage === "fetch_mission" || msg.stage === "parse_mission") {
+      setMissionStatus(msg.detail || replayProgressStageLabel(msg.stage));
+    } else {
+      setReplayStatus(msg.detail || replayProgressStageLabel(msg.stage));
+    }
     return;
   }
   if (msg.type === "error") {
-    replayIsLoading = false;
-    replayReady = false;
-    setReplayStatus(`Ошибка: ${msg.message}`);
+    if (missionIsLoading) {
+      missionIsLoading = false;
+      btnLoadMission.disabled = !replayData;
+      setMissionStatus(`Ошибка: ${msg.message}`);
+    } else {
+      replayIsLoading = false;
+      replayReady = false;
+      btnLoadMission.disabled = !replayData;
+      setReplayStatus(`Ошибка: ${msg.message}`);
+    }
     return;
   }
   if (msg.type === "replay_list_loaded") {
@@ -1649,6 +1885,9 @@ replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
   if (msg.type === "replay_parsed") {
     replayIsLoading = false;
     replayData = msg.replay;
+    if (!selectedReplayRow || selectedReplayRow.name !== replayData.replayName) {
+      selectedReplayRow = replayRows.find((entry) => entry.row.name === replayData.replayName)?.row ?? selectedReplayRow;
+    }
     replayUnitsById = new Map(replayData.units.map((unit) => [unit.id, unit]));
     replayReady = false;
     replayPendingStart = true;
@@ -1657,9 +1896,24 @@ replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
     updateKillboard();
     updateEventboard(true);
     updateReplayPanels();
+    btnLoadMission.disabled = false;
     updateUrlReplayParams(replayData.replayName, replayData.archive);
     setReplayStatus(`Реплей разобран (${replaySourceLabel(replayData.source)}). Подбираю карту...`);
+    setMissionStatus("Опционально: нажмите «Загрузить детали миссии», чтобы добавить маркеры и объекты.");
     attemptMapAutoloadForReplay();
+    return;
+  }
+  if (msg.type === "mission_details_loaded") {
+    missionIsLoading = false;
+    btnLoadMission.disabled = !replayData;
+    missionDetails = msg.mission;
+    updateReplayMeta();
+    renderMissionOverlay();
+    if (!currentMapName) {
+      setMissionStatus(
+        `Детали миссии загружены (${msg.mission.missionFile}). Загрузите карту "${msg.mission.mapKey}", чтобы показать объекты.`
+      );
+    }
   }
 };
 
@@ -1926,6 +2180,22 @@ btnLoadReplay.addEventListener("click", () => {
   loadSelectedReplay();
 });
 
+btnLoadMission.addEventListener("click", () => {
+  loadMissionDetails();
+});
+
+missionShowMarkersInput.addEventListener("change", () => {
+  localStorage.setItem("mission_show_markers", missionShowMarkersInput.checked ? "1" : "0");
+  renderMissionOverlay();
+  updateReplayMeta();
+});
+
+missionShowObjectsInput.addEventListener("change", () => {
+  localStorage.setItem("mission_show_objects", missionShowObjectsInput.checked ? "1" : "0");
+  renderMissionOverlay();
+  updateReplayMeta();
+});
+
 replayBoardKillsBtn.addEventListener("click", () => {
   setReplayBoardTab("kills");
 });
@@ -2081,6 +2351,26 @@ function updateMinimap() {
     minimapCtx.strokeStyle = MARK_COLOR_CSS[line.color];
     minimapCtx.lineWidth = 2;
     minimapCtx.stroke();
+  }
+
+  if (missionMarkersRender.length > 0) {
+    for (const item of missionMarkersRender) {
+      const points = buildMissionMarkerPoints(item.marker, item.worldX, item.worldZ, 0);
+      if (points.length < 2) continue;
+      minimapCtx.beginPath();
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const px = (p.x / currentMapSize) * size;
+        const py = (1 - p.z / currentMapSize) * size;
+        if (i === 0) minimapCtx.moveTo(px, py);
+        else minimapCtx.lineTo(px, py);
+      }
+      minimapCtx.strokeStyle = item.color;
+      minimapCtx.lineWidth = item.marker.drawBorder ? 1.6 : 1.1;
+      minimapCtx.globalAlpha = missionMarkerOpacity(item.marker);
+      minimapCtx.stroke();
+      minimapCtx.globalAlpha = 1;
+    }
   }
 
   if (replayReady) {

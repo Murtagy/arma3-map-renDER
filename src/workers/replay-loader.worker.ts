@@ -1,6 +1,9 @@
 /// <reference lib="webworker" />
 
+import { parseMissionSqm } from "../parsers/mission-sqm";
+import { extractEntry, parsePboBuffer } from "../parsers/pbo";
 import type {
+  MissionDetails,
   ReplayData,
   ReplayListItem,
   ReplayTimelineEvent,
@@ -10,6 +13,7 @@ import type {
 } from "./types";
 
 const REPLAY_BASE_URL = "https://replay.tsgames.ru";
+const MISSION_BASE_URL = "https://tsgames.ru/files/missions";
 const DEFAULT_FILTERS = ["1", "2", "3", "4", "10", "20:1"];
 
 interface ReplayListResponse {
@@ -35,7 +39,10 @@ function post(msg: ReplayWorkerResponse, transfer?: Transferable[]) {
   self.postMessage(msg);
 }
 
-function progress(stage: "fetch_list" | "fetch_replay" | "parse_replay", detail?: string) {
+function progress(
+  stage: "fetch_list" | "fetch_replay" | "parse_replay" | "fetch_mission" | "parse_mission",
+  detail?: string
+) {
   post({ type: "replay_progress", stage, detail });
 }
 
@@ -79,6 +86,38 @@ function buildReplayDetailUrl(replayName: string, archive: number): string {
   params.set("params[ar]", String(archive));
   params.set("params[a]", "3");
   return `${REPLAY_BASE_URL}/ajax.php?${params.toString()}`;
+}
+
+function buildMissionCandidateFiles(replayName: string, missionName?: string, mapKey?: string): string[] {
+  const mapFromReplayName = getReplayMapFromName(replayName);
+  const mapCandidates = [mapKey || "", mapFromReplayName]
+    .map((item) => item.trim())
+    .filter((item, index, arr) => item.length > 0 && arr.indexOf(item) === index);
+
+  const replayParts = replayName.split(".");
+  const missionFromReplayName = replayParts.length >= 3 ? replayParts[replayParts.length - 2] : "";
+  const missionFromName = missionName
+    ? missionName
+        .trim()
+        .replace(/\s+/g, "_")
+        .replace(/_+/g, "_")
+    : "";
+
+  const missionCandidates = [missionFromReplayName, missionFromName, missionName || ""]
+    .map((item) => item.trim())
+    .filter((item, index, arr) => item.length > 0 && arr.indexOf(item) === index);
+
+  const files: string[] = [];
+  for (const missionToken of missionCandidates) {
+    if (missionToken.toLowerCase().endsWith(".pbo")) {
+      files.push(missionToken);
+      continue;
+    }
+    for (const mapToken of mapCandidates) {
+      files.push(`${missionToken}.${mapToken}.pbo`);
+    }
+  }
+  return files.filter((item, index, arr) => item.length > 0 && arr.indexOf(item) === index);
 }
 
 function buildProxyUrl(proxyUrl: string, targetUrl: string): string {
@@ -134,6 +173,71 @@ async function fetchJsonWithFallback(url: string, proxyUrl?: string): Promise<{
   }
 
   throw new Error(`Не удалось получить реплей. ${directError}. Часто это CORS-блокировка браузера.`);
+}
+
+async function fetchArrayBufferWithFallback(url: string, proxyUrl?: string): Promise<{
+  buffer: ArrayBuffer;
+  source: "direct" | "proxy";
+}> {
+  const trimmedProxy = proxyUrl?.trim() || "";
+
+  if (trimmedProxy) {
+    const proxiedUrl = buildProxyUrl(trimmedProxy, url);
+    try {
+      const response = await fetch(proxiedUrl, {
+        method: "GET",
+        credentials: "omit",
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return { buffer: await response.arrayBuffer(), source: "proxy" };
+    } catch (proxyErr: unknown) {
+      try {
+        const response = await fetch(url, {
+          method: "GET",
+          credentials: "omit",
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return { buffer: await response.arrayBuffer(), source: "direct" };
+      } catch (directErr: unknown) {
+        throw new Error(
+          `Не удалось скачать файл миссии через прокси (${normalizeError(proxyErr)}) и напрямую (${normalizeError(directErr)}).`
+        );
+      }
+    }
+  }
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      credentials: "omit",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return { buffer: await response.arrayBuffer(), source: "direct" };
+  } catch (err: unknown) {
+    throw new Error(`Не удалось скачать файл миссии напрямую (${normalizeError(err)}). Часто это CORS-блокировка браузера.`);
+  }
+}
+
+function decodeMissionSqm(bytes: Uint8Array): string {
+  const utf8 = new TextDecoder("utf-8").decode(bytes);
+  const replacementCount = (utf8.match(/\uFFFD/g) || []).length;
+  if (replacementCount > 24) {
+    try {
+      return new TextDecoder("windows-1251").decode(bytes);
+    } catch {
+      return utf8;
+    }
+  }
+  return utf8;
 }
 
 function parseReplayListPayload(payload: unknown): ReplayListItem[] {
@@ -428,6 +532,59 @@ async function handleLoadReplayDetail(replayName: string, archive: number | unde
   );
 }
 
+async function handleLoadMissionDetails(
+  replayName: string,
+  missionName: string | undefined,
+  mapKey: string | undefined,
+  proxyUrl?: string
+) {
+  const files = buildMissionCandidateFiles(replayName, missionName, mapKey);
+  if (files.length === 0) {
+    throw new Error("Не удалось вывести имя файла миссии из данных реплея.");
+  }
+
+  progress("fetch_mission", `Поиск миссии (${files.length} вариантов)...`);
+  const attempts: string[] = [];
+
+  for (const file of files) {
+    const missionUrl = `${MISSION_BASE_URL}/${encodeURIComponent(file)}`;
+    try {
+      progress("fetch_mission", `Скачивание ${file}`);
+      const { buffer, source } = await fetchArrayBufferWithFallback(missionUrl, proxyUrl);
+      progress("parse_mission", `Разбор ${file}`);
+
+      const pbo = parsePboBuffer(new Uint8Array(buffer));
+      const sqmEntry = pbo.entries.find((entry) => entry.filename.toLowerCase() === "mission.sqm");
+      if (!sqmEntry) {
+        throw new Error("В PBO отсутствует mission.sqm");
+      }
+
+      const sqmText = decodeMissionSqm(extractEntry(pbo, sqmEntry));
+      const parsed = parseMissionSqm(sqmText);
+      const mission: MissionDetails = {
+        replayName,
+        mapKey: mapKey || getReplayMapFromName(replayName),
+        missionName: missionName || "",
+        sourceName: parsed.sourceName,
+        missionFile: file,
+        missionUrl,
+        source,
+        markers: parsed.markers,
+        objects: parsed.objects,
+      };
+      post({
+        type: "mission_details_loaded",
+        mission,
+      });
+      return;
+    } catch (err: unknown) {
+      attempts.push(`${file}: ${normalizeError(err)}`);
+    }
+  }
+
+  throw new Error(`Не удалось загрузить mission.pbo. Попытки: ${attempts.slice(0, 4).join(" | ")}`);
+}
+
 self.onmessage = async (event: MessageEvent<ReplayWorkerRequest>) => {
   const msg = event.data;
   try {
@@ -438,6 +595,11 @@ self.onmessage = async (event: MessageEvent<ReplayWorkerRequest>) => {
 
     if (msg.type === "load_replay_detail") {
       await handleLoadReplayDetail(msg.replayName, msg.archive, msg.proxyUrl);
+      return;
+    }
+
+    if (msg.type === "load_mission_details") {
+      await handleLoadMissionDetails(msg.replayName, msg.missionName, msg.mapKey, msg.proxyUrl);
       return;
     }
   } catch (err: unknown) {

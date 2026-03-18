@@ -14,6 +14,7 @@ Browser-based 3D viewer for Arma 3 maps (`.pbo` / `.wrp`), fully client-side.
 - Replay timeline support (player positions, shots, kills, killboard, eventboard)
 - Replay server filter (`T1` / `T2` / `T3` / etc.) in replay selector
 - Player name labels rendered above 3D replay units
+- Optional mission-details overlay from mission `.pbo` (markers + simplified mission objects)
 - Collapsible UI: global controls panel, map/replay sections, killboard, eventboard
 
 ## Quick Start
@@ -122,11 +123,14 @@ npm run preview
 6. In **Replay Selection**, click **Fetch Replays**
 7. (Optional) Choose server in **Server** filter (`T2`, `T3`, etc.)
 8. Pick replay and click **Load Replay**
+9. (Optional) Click **Load Mission Details** to fetch mission `.pbo` and overlay mission markers/objects
 
 ### Replay UI Notes
 
 - Replay loading attempts to auto-match and auto-load map by replay map key.
 - If multiple maps match, select one manually and click **Load Map**.
+- Mission details are optional and loaded separately from replay data.
+- Mission overlay visibility can be toggled (`markers` / `objects`) after loading.
 - Replay panel (top-right) includes:
   - transport: play / pause / seek / speed
   - filters: messages / kills / hits / medical
@@ -136,7 +140,7 @@ npm run preview
 
 ## Replay Proxy (Required on Pages)
 
-`replay.tsgames.ru` API currently does not send browser CORS headers for cross-origin fetch.
+`replay.tsgames.ru` API and mission files on `tsgames.ru` currently do not provide browser CORS headers for this app origin.
 For GitHub Pages you need one HTTPS CORS proxy endpoint.
 
 ### One-time owner setup (all users benefit)
@@ -172,8 +176,12 @@ For local dev, use `.env.local` with the same `VITE_REPLAY_PROXY_URL` value.
 Notes:
 
 - Use `https://` only.
-- Worker is restricted to `https://replay.tsgames.ru/ajax.php` (not a generic open proxy).
+- Worker is restricted to:
+  - `https://replay.tsgames.ru/ajax.php`
+  - `https://tsgames.ru/files/missions/*.pbo`
+  - (not a generic open proxy)
 - Free/limits policy depends on your Cloudflare plan; monitor usage in Cloudflare dashboard.
+- If your worker was deployed before mission support, redeploy it so mission fetch can pass through proxy.
 
 Troubleshooting:
 
@@ -238,6 +246,7 @@ Deployment workflow is included at `.github/workflows/deploy-pages.yml`.
 - `src/workers/map-loader.worker.ts` - map parsing + satellite generation
 - `src/workers/replay-loader.worker.ts` - replay list/detail fetch + replay parsing
 - `src/parsers/*` - browser parsers for Arma formats
+- `src/parsers/mission-sqm.ts` - mission.sqm parser for mission markers/objects
 - `src/terrain.ts` - terrain mesh generation and satellite application
 - `src/objects.ts` - instanced object rendering
 - `src/plan-mode.ts` - tactical marks and lines
