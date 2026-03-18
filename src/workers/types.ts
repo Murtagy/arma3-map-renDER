@@ -266,7 +266,20 @@ export type LoadMissionDetailsRequest = {
   proxyUrl?: string;
 };
 
-export type ReplayWorkerRequest = LoadReplayListRequest | LoadReplayDetailRequest | LoadMissionDetailsRequest;
+export type LoadMissionUrlRequest = {
+  type: "load_mission_url";
+  missionUrl: string;
+  missionName?: string;
+  mapKey?: string;
+  replayName?: string;
+  proxyUrl?: string;
+};
+
+export type ReplayWorkerRequest =
+  | LoadReplayListRequest
+  | LoadReplayDetailRequest
+  | LoadMissionDetailsRequest
+  | LoadMissionUrlRequest;
 
 export type ReplayListLoadedMessage = {
   type: "replay_list_loaded";

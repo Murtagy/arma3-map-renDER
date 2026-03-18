@@ -556,6 +556,10 @@ const btnFetchReplays = document.getElementById("btn-fetch-replays") as HTMLButt
 const replaySelect = document.getElementById("replay-select") as HTMLSelectElement;
 const btnLoadReplay = document.getElementById("btn-load-replay") as HTMLButtonElement;
 const btnLoadMission = document.getElementById("btn-load-mission") as HTMLButtonElement;
+const btnToggleMissionManual = document.getElementById("btn-toggle-mission-manual") as HTMLButtonElement;
+const manualMissionPanel = document.getElementById("manual-mission-panel") as HTMLElement;
+const missionUrlInput = document.getElementById("mission-url") as HTMLInputElement;
+const btnLoadMissionUrl = document.getElementById("btn-load-mission-url") as HTMLButtonElement;
 const missionShowMarkersInput = document.getElementById("mission-show-markers") as HTMLInputElement;
 const missionShowObjectsInput = document.getElementById("mission-show-objects") as HTMLInputElement;
 const replayStatusEl = document.getElementById("replay-status") as HTMLElement;
@@ -585,10 +589,18 @@ replayProxyInput.value = localStorage.getItem("replay_proxy_url") || DEPLOY_REPL
 replaySpeedSelect.value = localStorage.getItem("replay_speed") || "1";
 missionShowMarkersInput.checked = localStorage.getItem("mission_show_markers") !== "0";
 missionShowObjectsInput.checked = localStorage.getItem("mission_show_objects") !== "0";
+missionUrlInput.value = localStorage.getItem("mission_manual_url") || "";
 btnLoadMission.disabled = true;
 if (replayProxyInput.value.trim()) {
   replayProxyRow.style.display = "none";
 }
+
+function setMissionManualPanelOpen(open: boolean) {
+  manualMissionPanel.style.display = open ? "block" : "none";
+  btnToggleMissionManual.textContent = open ? "Скрыть ручной ввод миссии" : "Хочу ввести миссию вручную";
+}
+
+setMissionManualPanelOpen(localStorage.getItem("mission_manual_panel_open") === "1");
 
 function setReplayBoardTab(tab: ReplayBoardTab) {
   replayBoardTab = tab;
@@ -631,6 +643,12 @@ function setReplayStatus(text: string) {
 
 function setMissionStatus(text: string) {
   missionStatusEl.textContent = text;
+}
+
+function setMissionLoading(loading: boolean) {
+  missionIsLoading = loading;
+  btnLoadMission.disabled = loading || !replayData;
+  btnLoadMissionUrl.disabled = loading;
 }
 
 function replaySourceLabel(source: string): string {
@@ -930,7 +948,8 @@ function missionMapMatchesCurrentMap(): boolean {
   if (!missionDetails || !currentMapName) return false;
   const currentToken = normalizeMapToken(currentMapName);
   const missionToken = normalizeMapToken(missionDetails.mapKey || "");
-  if (!currentToken || !missionToken) return false;
+  if (!currentToken) return false;
+  if (!missionToken) return true;
   return missionToken === currentToken || missionToken.includes(currentToken) || currentToken.includes(missionToken);
 }
 
@@ -1753,7 +1772,7 @@ function renderReplaySelectOptions() {
   if (replayVisibleRows.length === 0) {
     replaySelect.disabled = true;
     btnLoadReplay.disabled = true;
-    btnLoadMission.disabled = true;
+    if (!missionIsLoading) btnLoadMission.disabled = true;
     replaySelect.innerHTML = '<option value="">-- для этого сервера реплеев нет --</option>';
     return;
   }
@@ -1804,7 +1823,7 @@ function loadSelectedReplay() {
   replayReady = false;
   replayPlaying = false;
   missionDetails = null;
-  missionIsLoading = false;
+  setMissionLoading(false);
   clearMissionOverlay();
   setMissionStatus("Детали миссии не загружены.");
   btnLoadMission.disabled = true;
@@ -1819,8 +1838,7 @@ function loadSelectedReplay() {
 
 function loadMissionDetails() {
   if (missionIsLoading || !replayData) return;
-  missionIsLoading = true;
-  btnLoadMission.disabled = true;
+  setMissionLoading(true);
   const missionName = selectedReplayRow?.missionName || replayData.header.missionName;
   const mapKey = selectedReplayRow?.mapKey || replayData.header.mapKey;
   setMissionStatus("Загрузка файла mission.pbo...");
@@ -1829,6 +1847,26 @@ function loadMissionDetails() {
     replayName: replayData.replayName,
     missionName,
     mapKey,
+    proxyUrl: getReplayProxyUrl(),
+  });
+}
+
+function loadMissionFromUrl() {
+  if (missionIsLoading) return;
+  const missionUrl = missionUrlInput.value.trim();
+  if (!missionUrl) {
+    setMissionStatus("Введите ссылку на mission.pbo.");
+    return;
+  }
+  localStorage.setItem("mission_manual_url", missionUrl);
+  setMissionLoading(true);
+  setMissionStatus("Загрузка mission.pbo по ссылке...");
+  replayWorker.postMessage({
+    type: "load_mission_url",
+    missionUrl,
+    replayName: replayData?.replayName,
+    missionName: replayData?.header.missionName || selectedReplayRow?.missionName,
+    mapKey: replayData?.header.mapKey || selectedReplayRow?.mapKey,
     proxyUrl: getReplayProxyUrl(),
   });
 }
@@ -1845,8 +1883,7 @@ replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
   }
   if (msg.type === "error") {
     if (missionIsLoading) {
-      missionIsLoading = false;
-      btnLoadMission.disabled = !replayData;
+      setMissionLoading(false);
       setMissionStatus(`Ошибка: ${msg.message}`);
     } else {
       replayIsLoading = false;
@@ -1896,6 +1933,7 @@ replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
     updateKillboard();
     updateEventboard(true);
     updateReplayPanels();
+    setMissionLoading(false);
     btnLoadMission.disabled = false;
     updateUrlReplayParams(replayData.replayName, replayData.archive);
     setReplayStatus(`Реплей разобран (${replaySourceLabel(replayData.source)}). Подбираю карту...`);
@@ -1904,14 +1942,14 @@ replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
     return;
   }
   if (msg.type === "mission_details_loaded") {
-    missionIsLoading = false;
-    btnLoadMission.disabled = !replayData;
+    setMissionLoading(false);
     missionDetails = msg.mission;
     updateReplayMeta();
     renderMissionOverlay();
     if (!currentMapName) {
+      const mapHint = msg.mission.mapKey ? `"${msg.mission.mapKey}"` : "подходящую карту";
       setMissionStatus(
-        `Детали миссии загружены (${msg.mission.missionFile}). Загрузите карту "${msg.mission.mapKey}", чтобы показать объекты.`
+        `Детали миссии загружены (${msg.mission.missionFile}). Загрузите ${mapHint}, чтобы показать объекты.`
       );
     }
   }
@@ -2182,6 +2220,31 @@ btnLoadReplay.addEventListener("click", () => {
 
 btnLoadMission.addEventListener("click", () => {
   loadMissionDetails();
+});
+
+btnToggleMissionManual.addEventListener("click", () => {
+  const nextOpen = manualMissionPanel.style.display !== "block";
+  setMissionManualPanelOpen(nextOpen);
+  localStorage.setItem("mission_manual_panel_open", nextOpen ? "1" : "0");
+});
+
+btnLoadMissionUrl.addEventListener("click", () => {
+  loadMissionFromUrl();
+});
+
+missionUrlInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  loadMissionFromUrl();
+});
+
+missionUrlInput.addEventListener("input", () => {
+  const value = missionUrlInput.value.trim();
+  if (!value) {
+    localStorage.removeItem("mission_manual_url");
+    return;
+  }
+  localStorage.setItem("mission_manual_url", value);
 });
 
 missionShowMarkersInput.addEventListener("change", () => {

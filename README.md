@@ -14,7 +14,7 @@ Browser-based 3D viewer for Arma 3 maps (`.pbo` / `.wrp`), fully client-side.
 - Replay timeline support (player positions, shots, kills, killboard, eventboard)
 - Replay server filter (`T1` / `T2` / `T3` / etc.) in replay selector
 - Player name labels rendered above 3D replay units
-- Optional mission-details overlay from mission `.pbo` (markers + simplified mission objects)
+- Optional mission-details overlay from mission `.pbo` (markers + simplified mission objects), including manual mission URL input
 - Collapsible UI: global controls panel, map/replay sections, killboard, eventboard
 
 ## Quick Start
@@ -124,12 +124,14 @@ npm run preview
 7. (Optional) Choose server in **Server** filter (`T2`, `T3`, etc.)
 8. Pick replay and click **Load Replay**
 9. (Optional) Click **Load Mission Details** to fetch mission `.pbo` and overlay mission markers/objects
+10. (Optional fallback) Click **I want to input mission manually**, paste a direct `mission.pbo` link, and load it (works even without replay loaded)
 
 ### Replay UI Notes
 
 - Replay loading attempts to auto-match and auto-load map by replay map key.
 - If multiple maps match, select one manually and click **Load Map**.
 - Mission details are optional and loaded separately from replay data.
+- You can load mission details either from selected replay metadata or via manual mission URL fallback.
 - Mission overlay visibility can be toggled (`markers` / `objects`) after loading.
 - Replay panel (top-right) includes:
   - transport: play / pause / seek / speed

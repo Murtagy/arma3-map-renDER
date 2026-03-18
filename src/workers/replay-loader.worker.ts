@@ -120,6 +120,31 @@ function buildMissionCandidateFiles(replayName: string, missionName?: string, ma
   return files.filter((item, index, arr) => item.length > 0 && arr.indexOf(item) === index);
 }
 
+function missionFileNameFromUrl(missionUrl: string): string {
+  try {
+    const url = new URL(missionUrl);
+    const pathname = url.pathname || "";
+    const file = pathname.split("/").pop() || "";
+    return decodeURIComponent(file);
+  } catch {
+    return "";
+  }
+}
+
+function inferMissionNameAndMapKeyFromFile(fileName: string): { missionName: string; mapKey: string } {
+  const clean = fileName.trim().replace(/^.*[\\/]/, "");
+  const base = clean.replace(/\.pbo$/i, "");
+  if (!base) return { missionName: "", mapKey: "" };
+  const parts = base.split(".");
+  if (parts.length >= 2) {
+    return {
+      missionName: parts.slice(0, -1).join("."),
+      mapKey: parts[parts.length - 1],
+    };
+  }
+  return { missionName: base, mapKey: "" };
+}
+
 function buildProxyUrl(proxyUrl: string, targetUrl: string): string {
   if (proxyUrl.includes("{url}")) {
     return proxyUrl.replace("{url}", encodeURIComponent(targetUrl));
@@ -585,6 +610,62 @@ async function handleLoadMissionDetails(
   throw new Error(`Не удалось загрузить mission.pbo. Попытки: ${attempts.slice(0, 4).join(" | ")}`);
 }
 
+async function handleLoadMissionUrl(
+  missionUrl: string,
+  replayName: string | undefined,
+  missionName: string | undefined,
+  mapKey: string | undefined,
+  proxyUrl?: string
+) {
+  const trimmedUrl = missionUrl.trim();
+  if (!trimmedUrl) {
+    throw new Error("Пустой URL миссии.");
+  }
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(trimmedUrl);
+  } catch {
+    throw new Error("Некорректный URL миссии.");
+  }
+  if (parsedUrl.protocol !== "https:") {
+    throw new Error("Поддерживаются только https:// ссылки на mission.pbo.");
+  }
+
+  const missionFile = missionFileNameFromUrl(trimmedUrl);
+  if (!missionFile.toLowerCase().endsWith(".pbo")) {
+    throw new Error("Ссылка должна указывать на файл .pbo.");
+  }
+  const inferred = inferMissionNameAndMapKeyFromFile(missionFile);
+
+  progress("fetch_mission", `Скачивание ${missionFile}`);
+  const { buffer, source } = await fetchArrayBufferWithFallback(trimmedUrl, proxyUrl);
+  progress("parse_mission", `Разбор ${missionFile}`);
+
+  const pbo = parsePboBuffer(new Uint8Array(buffer));
+  const sqmEntry = pbo.entries.find((entry) => entry.filename.toLowerCase() === "mission.sqm");
+  if (!sqmEntry) {
+    throw new Error("В PBO отсутствует mission.sqm");
+  }
+
+  const sqmText = decodeMissionSqm(extractEntry(pbo, sqmEntry));
+  const parsed = parseMissionSqm(sqmText);
+  const mission: MissionDetails = {
+    replayName: replayName || missionFile.replace(/\.pbo$/i, ""),
+    mapKey: mapKey || inferred.mapKey,
+    missionName: missionName || inferred.missionName,
+    sourceName: parsed.sourceName,
+    missionFile,
+    missionUrl: trimmedUrl,
+    source,
+    markers: parsed.markers,
+    objects: parsed.objects,
+  };
+  post({
+    type: "mission_details_loaded",
+    mission,
+  });
+}
+
 self.onmessage = async (event: MessageEvent<ReplayWorkerRequest>) => {
   const msg = event.data;
   try {
@@ -600,6 +681,11 @@ self.onmessage = async (event: MessageEvent<ReplayWorkerRequest>) => {
 
     if (msg.type === "load_mission_details") {
       await handleLoadMissionDetails(msg.replayName, msg.missionName, msg.mapKey, msg.proxyUrl);
+      return;
+    }
+
+    if (msg.type === "load_mission_url") {
+      await handleLoadMissionUrl(msg.missionUrl, msg.replayName, msg.missionName, msg.mapKey, msg.proxyUrl);
       return;
     }
   } catch (err: unknown) {
