@@ -50,9 +50,9 @@ const hudEl = document.getElementById("hud")!;
 const statusEl = document.getElementById("status")!;
 const controlsHelpEl = document.getElementById("controls-help")!;
 const DEFAULT_CONTROLS_HELP =
-  "WASD - Движение | QE - Вверх/вниз | Мышь - Осмотр | Shift - Ускорение | Колесо - Скорость | P - Режим плана";
+  "WASD - Движение | QE - Вверх/вниз | Мышь - Осмотр | Shift - Ускорение | Колесо - Скорость | P - Режим плана | Esc - Отмена/выход";
 const FOLLOW_CONTROLS_HELP =
-  "Режим слежения: Мышь - Угол камеры (после клика по сцене) | Колесо - Дистанция | 📷 - Открепить камеру";
+  "Режим слежения: Мышь - Угол камеры (после клика по сцене) | Колесо - Дистанция | 📷 - Открепить камеру | Esc - Отмена/выход";
 
 function setStatus(text: string) {
   statusEl.textContent = text;
