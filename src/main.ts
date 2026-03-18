@@ -571,7 +571,7 @@ const replayPauseBtn = document.getElementById("btn-replay-pause") as HTMLButton
 const replaySeekInput = document.getElementById("replay-seek") as HTMLInputElement;
 const replaySpeedSelect = document.getElementById("replay-speed") as HTMLSelectElement;
 const replayTimeEl = document.getElementById("replay-time") as HTMLElement;
-const replayPinKillsInput = document.getElementById("replay-pin-kills") as HTMLInputElement;
+const replayShowDeadInput = document.getElementById("replay-show-dead") as HTMLInputElement;
 const replayBoardKillsBtn = document.getElementById("btn-board-kills") as HTMLButtonElement;
 const replayBoardEventsBtn = document.getElementById("btn-board-events") as HTMLButtonElement;
 const replayBoardKillsPane = document.getElementById("replay-board-kills") as HTMLElement;
@@ -587,6 +587,7 @@ let replayBoardTab: ReplayBoardTab = localStorage.getItem("replay_board_tab") ==
 
 replayProxyInput.value = localStorage.getItem("replay_proxy_url") || DEPLOY_REPLAY_PROXY_URL;
 replaySpeedSelect.value = localStorage.getItem("replay_speed") || "1";
+replayShowDeadInput.checked = localStorage.getItem("replay_show_dead") === "1";
 missionShowMarkersInput.checked = localStorage.getItem("mission_show_markers") !== "0";
 missionShowObjectsInput.checked = localStorage.getItem("mission_show_objects") !== "0";
 missionUrlInput.value = localStorage.getItem("mission_manual_url") || "";
@@ -1107,6 +1108,17 @@ function sideColor(side: number): number {
   return SIDE_COLORS[side] ?? SIDE_COLORS[4];
 }
 
+function tintColorWithWhite(color: number, amount: number): string {
+  const t = Math.max(0, Math.min(1, amount));
+  const r = (color >> 16) & 0xff;
+  const g = (color >> 8) & 0xff;
+  const b = color & 0xff;
+  const rr = Math.round(r + (255 - r) * t);
+  const gg = Math.round(g + (255 - g) * t);
+  const bb = Math.round(b + (255 - b) * t);
+  return `#${rr.toString(16).padStart(2, "0")}${gg.toString(16).padStart(2, "0")}${bb.toString(16).padStart(2, "0")}`;
+}
+
 function stateIsDead(unitType: string, stateFlag: number): boolean {
   if (stateFlag === -1) return true;
   if (stateFlag >= 1) {
@@ -1214,6 +1226,7 @@ function resolveReplayWorldPosition(id: number, nowSec: number): { x: number; y:
 
 function updateReplayVisuals(nowSec: number) {
   if (!replayReady) return;
+  const showDead = replayShowDeadInput.checked;
   for (const visual of replayVisuals.values()) {
     visual.mesh.visible = false;
     visual.labelEl.style.display = "none";
@@ -1230,6 +1243,12 @@ function updateReplayVisuals(nowSec: number) {
 
     const dead = stateIsDead(unit.unitType, state.stateFlag);
     const unconscious = stateIsUnconscious(unit.unitType, state.stateFlag);
+    if (dead && !showDead) {
+      visual.mesh.visible = false;
+      visual.labelEl.style.display = "none";
+      continue;
+    }
+
     visual.mesh.visible = true;
     const meshY = unit.unitType === "man" ? worldPos.y + 2.625 : worldPos.y;
     visual.mesh.position.set(worldPos.x, meshY, worldPos.z);
@@ -1250,10 +1269,12 @@ function updateReplayVisuals(nowSec: number) {
       material.emissive.setHex(0x202020);
       material.opacity = 0.95;
     }
-
     if (dead) {
-      visual.labelEl.style.display = "none";
-      continue;
+      visual.labelEl.style.color = tintColorWithWhite(sideColor(unit.side), 0.78);
+      visual.labelEl.style.opacity = "0.7";
+    } else {
+      visual.labelEl.style.color = "";
+      visual.labelEl.style.opacity = "1";
     }
 
     const p = new THREE.Vector3(worldPos.x, worldPos.y + 16, worldPos.z).project(camera);
@@ -1384,25 +1405,20 @@ function applyReplayFrameStates(frameIndex: number) {
   }
 }
 
-function applyReplayFrameEvents(frameIndex: number, emitVisuals: boolean) {
-  if (!replayData || !emitVisuals) return;
+function applyReplayFrameEvents(frameIndex: number) {
+  if (!replayData) return;
   const eventOffset = replayData.frameEventOffsets[frameIndex] ?? 0;
   const eventCount = replayData.frameEventCounts[frameIndex] ?? 0;
   for (let i = 0; i < eventCount; i++) {
     const event = replayData.events[eventOffset + i];
     if (!event) continue;
     if (event.type === 4) {
+      if (!replayShowDeadInput.checked) continue;
       const killerPos = resolveReplayWorldPosition(event.killerId, event.timeSec);
       const victimPos = resolveReplayWorldPosition(event.victimId, event.timeSec);
       const killerUnit = replayUnitsById.get(event.killerId);
       if (killerPos && victimPos) {
-        addReplayLine(
-          killerPos,
-          victimPos,
-          killerUnit?.side ?? 4,
-          "kill",
-          replayPinKillsInput.checked
-        );
+        addReplayLine(killerPos, victimPos, killerUnit?.side ?? 4, "kill", true);
       }
       continue;
     }
@@ -1417,7 +1433,7 @@ function applyReplayFrameEvents(frameIndex: number, emitVisuals: boolean) {
   }
 }
 
-function rebuildReplayStateToFrame(targetFrame: number, emitVisualEvents: boolean) {
+function rebuildReplayStateToFrame(targetFrame: number) {
   if (!replayData) return;
   replayRuntimeStates.clear();
   clearReplayVisuals();
@@ -1426,23 +1442,23 @@ function rebuildReplayStateToFrame(targetFrame: number, emitVisualEvents: boolea
   const clamped = Math.max(0, Math.min(targetFrame, replayData.frameTimes.length - 1));
   for (let frame = 0; frame <= clamped; frame++) {
     applyReplayFrameStates(frame);
-    applyReplayFrameEvents(frame, emitVisualEvents);
+    applyReplayFrameEvents(frame);
   }
   replayLastAppliedFrame = clamped;
 }
 
-function setReplayTime(timeSec: number, emitVisualEvents: boolean) {
+function setReplayTime(timeSec: number) {
   if (!replayData || replayData.frameTimes.length === 0) return;
   const lastTime = replayData.frameTimes[replayData.frameTimes.length - 1] || 0;
   replayCurrentTimeSec = Math.max(0, Math.min(timeSec, lastTime));
   const targetFrame = findFrameForTime(replayCurrentTimeSec);
 
   if (targetFrame < replayLastAppliedFrame) {
-    rebuildReplayStateToFrame(targetFrame, emitVisualEvents);
+    rebuildReplayStateToFrame(targetFrame);
   } else {
     for (let frame = replayLastAppliedFrame + 1; frame <= targetFrame; frame++) {
       applyReplayFrameStates(frame);
-      applyReplayFrameEvents(frame, emitVisualEvents);
+      applyReplayFrameEvents(frame);
     }
     replayLastAppliedFrame = targetFrame;
   }
@@ -1671,7 +1687,7 @@ function startReplayIfReady() {
 
   const firstTime = replayData.frameTimes[0] || 0;
   replayCurrentTimeSec = firstTime;
-  setReplayTime(firstTime, true);
+  setReplayTime(firstTime);
   setReplayStatus(`Реплей готов: ${replayData.replayName}`);
   updateReplayPanels();
 }
@@ -2282,7 +2298,7 @@ replayPauseBtn.addEventListener("click", () => {
 replaySeekInput.addEventListener("input", () => {
   if (!replayData) return;
   replayPlaying = false;
-  setReplayTime(Number(replaySeekInput.value), replayPinKillsInput.checked);
+  setReplayTime(Number(replaySeekInput.value));
   updateReplayPanels();
 });
 
@@ -2290,9 +2306,12 @@ replaySpeedSelect.addEventListener("change", () => {
   localStorage.setItem("replay_speed", replaySpeedSelect.value);
 });
 
-replayPinKillsInput.addEventListener("change", () => {
+replayShowDeadInput.addEventListener("change", () => {
+  localStorage.setItem("replay_show_dead", replayShowDeadInput.checked ? "1" : "0");
   if (!replayData) return;
-  setReplayTime(replayCurrentTimeSec, replayPinKillsInput.checked);
+  rebuildReplayStateToFrame(replayCurrentFrame);
+  updateReplayVisuals(replayCurrentTimeSec);
+  updateReplayPanels();
 });
 
 for (const [el, key] of [
@@ -2323,7 +2342,7 @@ replayEventboardEl.addEventListener("click", (event) => {
   const time = Number(row.dataset.time || 0);
   if (!Number.isFinite(time)) return;
   replayPlaying = false;
-  setReplayTime(time, replayPinKillsInput.checked);
+  setReplayTime(time);
   updateReplayPanels();
 });
 
@@ -2500,7 +2519,7 @@ function animate() {
       const speed = (Number(replaySpeedSelect.value) || 1) * REPLAY_SPEED_MULTIPLIER;
       const next = replayCurrentTimeSec + dt * speed;
       const max = replayData.frameTimes[replayData.frameTimes.length - 1] || 0;
-      setReplayTime(next, true);
+      setReplayTime(next);
       if (next >= max) {
         replayPlaying = false;
         updateReplayPanels();
