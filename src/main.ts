@@ -508,12 +508,10 @@ interface MissionMarkerRender {
 
 interface ReplayUnitBreakdown {
   killed: Map<number, number>;
+  otherKills: Map<number, number>;
   killedBy: Map<number, number>;
-  damageDone: number;
-  damageHits: number;
-  fatalHits: number;
-  healDone: number;
-  healActions: number;
+  otherDamageByTarget: Map<number, { total: number; events: number }>;
+  healByTarget: Map<number, { total: number; events: number }>;
 }
 
 let replayRows: ReplayRowEntry[] = [];
@@ -1574,56 +1572,166 @@ function eventUnitLabel(unitId: number): { nameHtml: string; sideClass: string }
   return { nameHtml: escapeHtml(name), sideClass };
 }
 
+function isReplayPlayerUnit(unitId: number): boolean {
+  const unit = replayUnitsById.get(unitId);
+  if (!unit) return false;
+  if (unit.kind !== "unit" || unit.unitType !== "man") return false;
+  return unit.playerName.trim().length > 0 || unit.steamId.trim().length > 0;
+}
+
 function replayUnitBreakdown(unitId: number): ReplayUnitBreakdown {
   const killed = new Map<number, number>();
+  const otherKills = new Map<number, number>();
   const killedBy = new Map<number, number>();
-  let damageDone = 0;
-  let damageHits = 0;
-  let fatalHits = 0;
-  let healDone = 0;
-  let healActions = 0;
+  const killedVictims = new Set<number>();
+  const otherDamageByTarget = new Map<number, { total: number; events: number }>();
+  const healByTarget = new Map<number, { total: number; events: number }>();
 
   if (!replayData) {
-    return { killed, killedBy, damageDone, damageHits, fatalHits, healDone, healActions };
+    return {
+      killed,
+      otherKills,
+      killedBy,
+      otherDamageByTarget,
+      healByTarget,
+    };
   }
 
   for (const event of replayData.events) {
     if (event.type === 4) {
       if (event.killerId === unitId && event.victimId > 0) {
-        killed.set(event.victimId, (killed.get(event.victimId) || 0) + 1);
+        if (isReplayPlayerUnit(event.victimId)) {
+          killed.set(event.victimId, (killed.get(event.victimId) || 0) + 1);
+          killedVictims.add(event.victimId);
+        } else {
+          otherKills.set(event.victimId, (otherKills.get(event.victimId) || 0) + 1);
+        }
       }
       if (event.victimId === unitId && event.killerId > 0) {
         killedBy.set(event.killerId, (killedBy.get(event.killerId) || 0) + 1);
       }
-      continue;
-    }
-    if (event.type === 5 && event.sourceId === unitId) {
-      damageDone += Math.max(0, event.damage || 0);
-      damageHits++;
-      if (event.fatal) fatalHits++;
-      continue;
-    }
-    if (event.type === 7 && event.actorId === unitId && event.success) {
-      healActions++;
-      healDone += Math.max(0, event.amount || 0);
     }
   }
 
-  return { killed, killedBy, damageDone, damageHits, fatalHits, healDone, healActions };
+  for (const event of replayData.events) {
+    if (event.type === 5 && event.sourceId === unitId) {
+      if (!event.fatal) {
+        if (event.targetId > 0 && !isReplayPlayerUnit(event.targetId)) {
+          continue;
+        }
+        if (event.targetId > 0 && killedVictims.has(event.targetId)) {
+          continue;
+        }
+        if (event.targetId > 0 && event.targetId !== unitId) {
+          const existing = otherDamageByTarget.get(event.targetId) || { total: 0, events: 0 };
+          existing.total += Math.max(0, event.damage || 0);
+          existing.events++;
+          otherDamageByTarget.set(event.targetId, existing);
+        }
+      }
+      continue;
+    }
+    if (event.type === 7 && event.actorId === unitId && event.success) {
+      if (event.targetId > 0 && !isReplayPlayerUnit(event.targetId)) {
+        continue;
+      }
+      if (event.targetId > 0 && event.targetId !== unitId) {
+        const existing = healByTarget.get(event.targetId) || { total: 0, events: 0 };
+        existing.total += Math.max(0, event.amount || 0);
+        existing.events++;
+        healByTarget.set(event.targetId, existing);
+      }
+    }
+  }
+
+  return {
+    killed,
+    otherKills,
+    killedBy,
+    otherDamageByTarget,
+    healByTarget,
+  };
 }
 
 function renderUnitCountMapHtml(prefix: string, data: Map<number, number>, empty: string): string {
   const items = Array.from(data.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8);
   if (items.length === 0) {
-    return `<div class="kb-detail-line"><span class="kb-detail-label">${escapeHtml(prefix)}:</span> ${escapeHtml(empty)}</div>`;
+    return (
+      `<div class="kb-detail-group">` +
+      `<div class="kb-detail-label">${escapeHtml(prefix)}:</div>` +
+      `<div class="kb-detail-line">${escapeHtml(empty)}</div>` +
+      `</div>`
+    );
   }
-  const body = items
+  const lines = items
     .map(([id, count]) => {
       const unit = eventUnitLabel(id);
-      return `<span class="${unit.sideClass}">${unit.nameHtml}</span>${count > 1 ? ` x${count}` : ""}`;
+      return (
+        `<div class="kb-detail-line">` +
+        `<span class="${unit.sideClass}">${unit.nameHtml}</span>${count > 1 ? ` x${count}` : ""}` +
+        `</div>`
+      );
     })
-    .join(", ");
-  return `<div class="kb-detail-line"><span class="kb-detail-label">${escapeHtml(prefix)}:</span> ${body}</div>`;
+    .join("");
+  return `<div class="kb-detail-group"><div class="kb-detail-label">${escapeHtml(prefix)}:</div>${lines}</div>`;
+}
+
+function renderDamageByTargetHtml(
+  prefix: string,
+  data: Map<number, { total: number; events: number }>,
+  empty: string
+): string {
+  const items = Array.from(data.entries())
+    .sort((a, b) => b[1].total - a[1].total || b[1].events - a[1].events)
+    .slice(0, 10);
+  if (items.length === 0) {
+    return (
+      `<div class="kb-detail-group">` +
+      `<div class="kb-detail-label">${escapeHtml(prefix)}:</div>` +
+      `<div class="kb-detail-line">${escapeHtml(empty)}</div>` +
+      `</div>`
+    );
+  }
+  const lines = items
+    .map(([id, value]) => {
+      const unit = eventUnitLabel(id);
+      return (
+        `<div class="kb-detail-line">` +
+        `<span class="${unit.sideClass}">${unit.nameHtml}</span>: ${formatMetric(value.total)} (${value.events} попад.)` +
+        `</div>`
+      );
+    })
+    .join("");
+  return `<div class="kb-detail-group"><div class="kb-detail-label">${escapeHtml(prefix)}:</div>${lines}</div>`;
+}
+
+function renderHealByTargetHtml(
+  prefix: string,
+  data: Map<number, { total: number; events: number }>,
+  empty: string
+): string {
+  const items = Array.from(data.entries())
+    .sort((a, b) => b[1].total - a[1].total || b[1].events - a[1].events)
+    .slice(0, 10);
+  if (items.length === 0) {
+    return (
+      `<div class="kb-detail-group">` +
+      `<div class="kb-detail-label">${escapeHtml(prefix)}:</div>` +
+      `<div class="kb-detail-line">${escapeHtml(empty)}</div>` +
+      `</div>`
+    );
+  }
+  const lines = items
+    .map(([id, value]) => {
+      const unit = eventUnitLabel(id);
+      return (
+        `<div class="kb-detail-line">` +
+        `<span class="${unit.sideClass}">${unit.nameHtml}</span>: ${formatMetric(value.total)} (${value.events} действ.)` +
+        `</div>`
+      );
+    })
+    .join("");
+  return `<div class="kb-detail-group"><div class="kb-detail-label">${escapeHtml(prefix)}:</div>${lines}</div>`;
 }
 
 function formatMetric(value: number): string {
@@ -1670,27 +1778,31 @@ function updateKillboard() {
     return;
   }
 
-  const stats = new Map<number, { kills: number; deaths: number; teamkills: number }>();
+  const stats = new Map<number, { kills: number; otherKills: number; deaths: number; teamkills: number }>();
   const ensure = (id: number) => {
     const existing = stats.get(id);
     if (existing) return existing;
-    const next = { kills: 0, deaths: 0, teamkills: 0 };
+    const next = { kills: 0, otherKills: 0, deaths: 0, teamkills: 0 };
     stats.set(id, next);
     return next;
   };
 
   for (const event of replayData.events) {
     if (event.type !== 4) continue;
-    if (event.killerId > 0 && event.killerId !== event.victimId) {
-      ensure(event.killerId).kills++;
+    const killerIsPlayer = event.killerId > 0 && isReplayPlayerUnit(event.killerId);
+    const victimIsPlayer = event.victimId > 0 && isReplayPlayerUnit(event.victimId);
+    if (killerIsPlayer && event.killerId !== event.victimId) {
+      if (victimIsPlayer) ensure(event.killerId).kills++;
+      else ensure(event.killerId).otherKills++;
     }
-    if (event.victimId > 0) {
+    if (victimIsPlayer) {
       ensure(event.victimId).deaths++;
     }
     const killerSide = replayUnitsById.get(event.killerId)?.side;
     const victimSide = replayUnitsById.get(event.victimId)?.side;
     if (
-      event.killerId > 0 &&
+      killerIsPlayer &&
+      victimIsPlayer &&
       event.killerId !== event.victimId &&
       killerSide !== undefined &&
       killerSide === victimSide
@@ -1700,8 +1812,8 @@ function updateKillboard() {
   }
 
   const rows = Array.from(stats.entries())
-    .map(([id, value]) => ({ id, ...value }))
-    .sort((a, b) => b.kills - a.kills || a.deaths - b.deaths)
+    .map(([id, value]) => ({ id, ...value, score: value.kills + value.otherKills }))
+    .sort((a, b) => b.score - a.score || b.kills - a.kills || a.deaths - b.deaths)
     .slice(0, 80);
 
   if (replayKillboardExpandedUnitId !== null && !rows.some((row) => row.id === replayKillboardExpandedUnitId)) {
@@ -1724,19 +1836,22 @@ function updateKillboard() {
       const expanded = replayKillboardExpandedUnitId === row.id;
       const following = replayFollowUnitId === row.id;
       const breakdown = expanded ? replayUnitBreakdown(row.id) : null;
+      const isDead = row.deaths > 0;
       const detailsHtml = breakdown
         ? [
             renderUnitCountMapHtml("Убил", breakdown.killed, "никого"),
+            renderUnitCountMapHtml("Прочие убийства", breakdown.otherKills, "нет"),
             renderUnitCountMapHtml("Убит кем", breakdown.killedBy, "не был убит"),
-            `<div class="kb-detail-line"><span class="kb-detail-label">Урон:</span> ${formatMetric(breakdown.damageDone)} (${breakdown.damageHits} попад., ${breakdown.fatalHits} фат.)</div>`,
-            `<div class="kb-detail-line"><span class="kb-detail-label">Лечение:</span> ${formatMetric(breakdown.healDone)} (${breakdown.healActions} действий)</div>`,
+            renderDamageByTargetHtml("Прочий урон по игрокам", breakdown.otherDamageByTarget, "нет"),
+            renderHealByTargetHtml("Лечение игроков", breakdown.healByTarget, "нет"),
           ].join("")
         : "";
       return (
-        `<div class="kb-row ${expanded ? "active" : ""} unit-side-${side}" data-unit-id="${row.id}">` +
+        `<div class="kb-row ${expanded ? "active" : ""} ${isDead ? "kb-row-dead" : "kb-row-alive"} unit-side-${side}" data-unit-id="${row.id}">` +
         `<button class="kb-name-btn" data-action="expand" data-unit-id="${row.id}" type="button">${escapeHtml(name)}</button>` +
-        `<span class="kb-stats">${row.kills}/${row.deaths}${row.teamkills > 0 ? ` tk:${row.teamkills}` : ""}</span>` +
+        `<span class="kb-stats">${row.kills}(${row.score})${row.teamkills > 0 ? ` tk:${row.teamkills}` : ""}</span>` +
         `<button class="kb-cam-btn ${following ? "active" : ""}" data-action="follow" data-unit-id="${row.id}" type="button" title="${following ? "Открепить камеру" : "Следить камерой"}">📷</button>` +
+        `<span class="kb-life-bar"></span>` +
         `</div>` +
         (expanded ? `<div class="kb-details">${detailsHtml}</div>` : "")
       );

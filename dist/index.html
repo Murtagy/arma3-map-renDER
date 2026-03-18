@@ -374,7 +374,7 @@
       }
       .kb-row {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto auto;
+        grid-template-columns: minmax(0, 1fr) auto auto 4px;
         gap: 6px;
         align-items: center;
       }
@@ -411,6 +411,18 @@
         border-color: #7fdbca;
         color: #7fdbca;
       }
+      .kb-life-bar {
+        width: 4px;
+        min-height: 18px;
+        border-radius: 2px;
+        background: #1b1b1b;
+      }
+      .kb-row.kb-row-alive .kb-life-bar {
+        background: #3fcf74;
+      }
+      .kb-row.kb-row-dead .kb-life-bar {
+        background: #171717;
+      }
       .kb-stats {
         color: #a8b2bb;
       }
@@ -420,6 +432,9 @@
         border: 1px solid rgba(127,219,202,0.2);
         border-radius: 0 0 4px 4px;
         background: rgba(12,20,20,0.55);
+      }
+      .kb-detail-group {
+        margin: 3px 0 4px;
       }
       .kb-detail-line {
         color: #b8c0c9;
@@ -471,7 +486,7 @@
         font-size: 11px;
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-CMmXFjU8.js"></script>
+    <script type="module" crossorigin src="/assets/index-OL-bgxrQ.js"></script>
   </head>
   <body>
     <details id="ui-shell" open>
