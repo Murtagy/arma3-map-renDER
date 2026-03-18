@@ -42,17 +42,24 @@ function skipGridBlock(reader: BinaryReader, dataSize: number) {
 }
 
 function skipABPacket(reader: BinaryReader, dataSize: number) {
-  // Iterative traversal avoids "Maximum call stack size exceeded" on deep packet trees.
-  let pendingPackets = 1;
-  while (pendingPackets > 0) {
-    pendingPackets--;
-    const flagBits = reader.readUint16();
-    for (let i = 0; i < 16; i++) {
-      if (flagBits & (1 << i)) {
-        pendingPackets++;
-      } else {
-        reader.skip(dataSize);
-      }
+  // Iterative DFS traversal preserves on-disk order and avoids JS recursion overflow.
+  const stack: Array<{ flags: number; nextChild: number }> = [
+    { flags: reader.readUint16(), nextChild: 0 },
+  ];
+
+  while (stack.length > 0) {
+    const top = stack[stack.length - 1];
+    if (top.nextChild >= 16) {
+      stack.pop();
+      continue;
+    }
+
+    const bit = 1 << top.nextChild;
+    top.nextChild++;
+    if (top.flags & bit) {
+      stack.push({ flags: reader.readUint16(), nextChild: 0 });
+    } else {
+      reader.skip(dataSize);
     }
   }
 }
