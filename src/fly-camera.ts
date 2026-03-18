@@ -28,7 +28,8 @@ export class FlyCamera {
   private isLocked = false;
 
   private euler = new THREE.Euler(0, 0, 0, "YXZ");
-  private direction = new THREE.Vector3();
+  private flatForward = new THREE.Vector3();
+  private flatRight = new THREE.Vector3();
 
   terrain: TerrainInfo | null = null;
 
@@ -84,16 +85,15 @@ export class FlyCamera {
       deltaTime *
       (this.keys.has("ShiftLeft") || this.keys.has("ShiftRight") ? 3 : 1);
 
-    // Forward/back
-    this.camera.getWorldDirection(this.direction);
-    if (this.keys.has("KeyW")) this.camera.position.addScaledVector(this.direction, speed);
-    if (this.keys.has("KeyS")) this.camera.position.addScaledVector(this.direction, -speed);
-
-    // Left/right (strafe)
-    const right = new THREE.Vector3();
-    right.crossVectors(this.direction, this.camera.up).normalize();
-    if (this.keys.has("KeyD")) this.camera.position.addScaledVector(right, speed);
-    if (this.keys.has("KeyA")) this.camera.position.addScaledVector(right, -speed);
+    // WASD movement is constrained to horizontal plane (yaw only).
+    this.euler.setFromQuaternion(this.camera.quaternion);
+    const yaw = this.euler.y;
+    this.flatForward.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+    this.flatRight.set(Math.cos(yaw), 0, -Math.sin(yaw));
+    if (this.keys.has("KeyW")) this.camera.position.addScaledVector(this.flatForward, speed);
+    if (this.keys.has("KeyS")) this.camera.position.addScaledVector(this.flatForward, -speed);
+    if (this.keys.has("KeyD")) this.camera.position.addScaledVector(this.flatRight, speed);
+    if (this.keys.has("KeyA")) this.camera.position.addScaledVector(this.flatRight, -speed);
 
     // Up/down (Q/E only; Space is reserved for replay play/pause)
     if (this.keys.has("KeyQ"))
