@@ -15,7 +15,7 @@
         z-index: 100;
         width: min(420px, calc(100vw - 20px));
       }
-      #ui-shell summary {
+      #ui-shell > summary {
         list-style: none;
         cursor: pointer;
         color: #7fdbca;
@@ -25,17 +25,22 @@
         padding: 6px 10px;
         font-size: 12px;
         user-select: none;
-        margin-bottom: 6px;
+        margin-bottom: 0;
       }
-      #ui-shell summary::-webkit-details-marker { display: none; }
-      #ui-shell summary::before { content: "▾ "; }
-      #ui-shell:not([open]) summary::before { content: "▸ "; }
+      #ui-shell[open] > summary {
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+      }
+      #ui-shell > summary::-webkit-details-marker { display: none; }
+      #ui-shell > summary::before { content: "▾ "; }
+      #ui-shell:not([open]) > summary::before { content: "▸ "; }
       #ui {
         background: rgba(0,0,0,0.8);
         padding: 12px;
-        border-radius: 6px;
+        border-radius: 0 0 6px 6px;
         font-size: 13px;
         border: 1px solid rgba(127,219,202,0.2);
+        border-top: none;
       }
       #ui h1 { font-size: 16px; margin-bottom: 8px; color: #7fdbca; }
       #ui details {
@@ -188,7 +193,7 @@
       #plan-toggle {
         position: absolute;
         top: 10px;
-        left: 390px;
+        left: 10px;
         z-index: 101;
         padding: 6px 10px;
         background: #3a506b;
@@ -252,30 +257,57 @@
         font-size: 11px;
         line-height: 1.35;
       }
-      #replay-panel {
+      #replay-panel, #replay-boards-panel {
         position: absolute;
-        top: 270px;
-        right: 10px;
         z-index: 100;
-        width: 420px;
-        max-height: calc(100vh - 290px);
-        overflow: auto;
         background: rgba(0,0,0,0.82);
         border-radius: 6px;
         border: 1px solid rgba(127, 219, 202, 0.35);
         padding: 10px;
         display: none;
       }
+      #replay-panel {
+        left: 50%;
+        bottom: 10px;
+        transform: translateX(-50%);
+        width: min(760px, calc(100vw - 20px));
+      }
+      #replay-boards-panel {
+        top: 270px;
+        left: 10px;
+        width: min(420px, calc(100vw - 20px));
+        max-height: calc(100vh - 280px);
+        overflow: auto;
+      }
       #replay-panel h2 {
         font-size: 14px;
         color: #7fdbca;
         margin-bottom: 4px;
       }
+      #replay-boards-panel > summary {
+        cursor: pointer;
+        color: #7fdbca;
+        font-size: 12px;
+        list-style: none;
+        user-select: none;
+        margin-bottom: 0;
+      }
+      #replay-boards-panel > summary::-webkit-details-marker { display: none; }
+      #replay-boards-panel > summary::before { content: "▸ "; }
+      #replay-boards-panel[open] > summary::before { content: "▾ "; }
+      #replay-boards-content {
+        margin-top: 8px;
+      }
+      #replay-panel .timeline-main-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
       #replay-panel details {
         border: 1px solid rgba(127,219,202,0.15);
         border-radius: 4px;
-        padding: 4px;
-        margin-top: 6px;
+        padding: 4px 6px;
+        margin-top: 8px;
       }
       #replay-panel summary {
         cursor: pointer;
@@ -284,8 +316,8 @@
         list-style: none;
       }
       #replay-panel summary::-webkit-details-marker { display: none; }
-      #replay-panel summary::before { content: "▾ "; }
-      #replay-panel details:not([open]) summary::before { content: "▸ "; }
+      #replay-panel summary::before { content: "▸ "; }
+      #replay-panel details[open] summary::before { content: "▾ "; }
       #replay-meta {
         white-space: pre-wrap;
         color: #a3acb2;
@@ -296,6 +328,10 @@
         color: #ddd;
         font-size: 12px;
         margin-left: auto;
+      }
+      #replay-panel #replay-speed {
+        width: 74px;
+        flex: 0 0 auto;
       }
       #replay-seek {
         width: 100%;
@@ -587,8 +623,7 @@
     <div id="replay-label-layer"></div>
     <div id="replay-panel">
       <h2>Таймлайн реплея</h2>
-      <div id="replay-meta"></div>
-      <div class="row">
+      <div class="timeline-main-row">
         <button id="btn-replay-play">Старт</button>
         <button id="btn-replay-pause" disabled>Пауза</button>
         <label style="display:flex; align-items:center; gap:4px; color:#bbb; font-size:11px;">
@@ -607,23 +642,32 @@
         <span id="replay-time">00:00:00 / 00:00:00</span>
       </div>
       <input id="replay-seek" type="range" min="0" max="0" value="0" />
-      <div class="replay-filter-row">
-        <label><input type="checkbox" id="replay-filter-messages" checked /> сообщения</label>
-        <label><input type="checkbox" id="replay-filter-kills" checked /> убийства</label>
-        <label><input type="checkbox" id="replay-filter-hits" checked /> попадания</label>
-        <label><input type="checkbox" id="replay-filter-medical" checked /> медицина</label>
-      </div>
-      <div class="replay-board-tabs">
-        <button id="btn-board-kills" class="replay-board-tab active" type="button">Убийства</button>
-        <button id="btn-board-events" class="replay-board-tab" type="button">События</button>
-      </div>
-      <div id="replay-board-kills" class="replay-board-pane active">
-        <div id="replay-killboard"></div>
-      </div>
-      <div id="replay-board-events" class="replay-board-pane">
-        <div id="replay-eventboard"></div>
-      </div>
+      <details>
+        <summary>Дополнительно</summary>
+        <div id="replay-meta"></div>
+      </details>
     </div>
+    <details id="replay-boards-panel" open>
+      <summary>События и убийства</summary>
+      <div id="replay-boards-content">
+        <div class="replay-filter-row">
+          <label><input type="checkbox" id="replay-filter-messages" checked /> сообщения</label>
+          <label><input type="checkbox" id="replay-filter-kills" checked /> убийства</label>
+          <label><input type="checkbox" id="replay-filter-hits" checked /> попадания</label>
+          <label><input type="checkbox" id="replay-filter-medical" checked /> медицина</label>
+        </div>
+        <div class="replay-board-tabs">
+          <button id="btn-board-kills" class="replay-board-tab active" type="button">Убийства</button>
+          <button id="btn-board-events" class="replay-board-tab" type="button">События</button>
+        </div>
+        <div id="replay-board-kills" class="replay-board-pane active">
+          <div id="replay-killboard"></div>
+        </div>
+        <div id="replay-board-events" class="replay-board-pane">
+          <div id="replay-eventboard"></div>
+        </div>
+      </div>
+    </details>
     <canvas id="minimap" width="250" height="250"></canvas>
     <div id="controls-help">
       WASD - Движение | QE - Вверх/вниз | Мышь - Осмотр | Shift - Ускорение | Колесо - Скорость | P - Режим плана

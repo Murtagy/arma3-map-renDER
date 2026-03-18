@@ -49,6 +49,7 @@ scene.add(gridHelper);
 const hudEl = document.getElementById("hud")!;
 const statusEl = document.getElementById("status")!;
 const controlsHelpEl = document.getElementById("controls-help")!;
+const uiShellEl = document.getElementById("ui-shell") as HTMLDetailsElement;
 const DEFAULT_CONTROLS_HELP =
   "WASD - Движение | QE - Вверх/вниз | Мышь - Осмотр | Shift - Ускорение | Колесо - Скорость | P - Режим плана | Esc - Отмена/выход";
 const FOLLOW_CONTROLS_HELP =
@@ -597,6 +598,7 @@ const replayStatusEl = document.getElementById("replay-status") as HTMLElement;
 const missionStatusEl = document.getElementById("mission-status") as HTMLElement;
 const replayMetaEl = document.getElementById("replay-meta") as HTMLElement;
 const replayPanel = document.getElementById("replay-panel") as HTMLElement;
+const replayBoardsPanel = document.getElementById("replay-boards-panel") as HTMLDetailsElement;
 const replayPlayBtn = document.getElementById("btn-replay-play") as HTMLButtonElement;
 const replayPauseBtn = document.getElementById("btn-replay-pause") as HTMLButtonElement;
 const replaySeekInput = document.getElementById("replay-seek") as HTMLInputElement;
@@ -615,6 +617,8 @@ const replayFilterHits = document.getElementById("replay-filter-hits") as HTMLIn
 const replayFilterMedical = document.getElementById("replay-filter-medical") as HTMLInputElement;
 const replayLabelLayer = document.getElementById("replay-label-layer") as HTMLElement;
 let replayBoardTab: ReplayBoardTab = localStorage.getItem("replay_board_tab") === "events" ? "events" : "kills";
+const REPLAY_BOARDS_PANEL_GAP_PX = 8;
+const PLAN_TOGGLE_GAP_PX = 8;
 
 replayProxyInput.value = localStorage.getItem("replay_proxy_url") || DEPLOY_REPLAY_PROXY_URL;
 replaySpeedSelect.value = localStorage.getItem("replay_speed") || "1";
@@ -633,6 +637,34 @@ function setMissionManualPanelOpen(open: boolean) {
 }
 
 setMissionManualPanelOpen(localStorage.getItem("mission_manual_panel_open") === "1");
+replayBoardsPanel.open = localStorage.getItem("replay_boards_open") !== "0";
+
+function layoutReplayBoardsPanel() {
+  const rect = uiShellEl.getBoundingClientRect();
+  const top = Math.max(10, Math.round(rect.bottom + REPLAY_BOARDS_PANEL_GAP_PX));
+  const left = Math.max(10, Math.round(rect.left));
+  replayBoardsPanel.style.top = `${top}px`;
+  replayBoardsPanel.style.left = `${left}px`;
+  replayBoardsPanel.style.right = "auto";
+  replayBoardsPanel.style.maxHeight = `${Math.max(120, window.innerHeight - top - 10)}px`;
+}
+
+function layoutPlanToggle() {
+  const rect = uiShellEl.getBoundingClientRect();
+  const top = Math.max(10, Math.round(rect.top));
+  const targetLeft = Math.round(rect.right + PLAN_TOGGLE_GAP_PX);
+  const maxLeft = window.innerWidth - planToggle.clientWidth - 10;
+  const left = Math.max(10, Math.min(maxLeft, targetLeft));
+  planToggle.style.top = `${top}px`;
+  planToggle.style.left = `${left}px`;
+}
+
+layoutReplayBoardsPanel();
+layoutPlanToggle();
+new MutationObserver(() => {
+  layoutReplayBoardsPanel();
+  layoutPlanToggle();
+}).observe(uiShellEl, { attributes: true, attributeFilter: ["open"], subtree: true });
 
 function setReplayBoardTab(tab: ReplayBoardTab) {
   replayBoardTab = tab;
@@ -1925,9 +1957,11 @@ function updateEventboard(force = false) {
 function updateReplayPanels() {
   if (!replayData || replayData.frameTimes.length === 0) {
     replayPanel.style.display = "none";
+    replayBoardsPanel.style.display = "none";
     return;
   }
   replayPanel.style.display = "block";
+  replayBoardsPanel.style.display = "block";
   const last = replayData.frameTimes[replayData.frameTimes.length - 1] || 0;
   replaySeekInput.max = String(last);
   replaySeekInput.value = String(Math.floor(replayCurrentTimeSec));
@@ -2795,6 +2829,13 @@ planPanel.addEventListener("mousedown", (e) => {
 replayPanel.addEventListener("mousedown", (e) => {
   e.stopPropagation();
 });
+replayBoardsPanel.addEventListener("mousedown", (e) => {
+  e.stopPropagation();
+});
+replayBoardsPanel.addEventListener("toggle", () => {
+  localStorage.setItem("replay_boards_open", replayBoardsPanel.open ? "1" : "0");
+  layoutReplayBoardsPanel();
+});
 planToggle.addEventListener("mousedown", (e) => {
   e.stopPropagation();
 });
@@ -2867,6 +2908,8 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  layoutReplayBoardsPanel();
+  layoutPlanToggle();
 });
 
 setStatus("Для начала выберите папку с картами (или отдельные файлы). Можно выбрать корневую папку игры.");
