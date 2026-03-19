@@ -14,6 +14,7 @@ import type {
   MissionDetails,
   MissionMarkerDef,
   MissionObjectDef,
+  MissionUnitDef,
   ReplayData,
   ReplayListItem,
   ReplayTimelineEvent,
@@ -76,6 +77,10 @@ const planMode = new PlanMode(scene, camera, renderer);
 (window as any).__planMode = planMode;
 const planToggle = document.getElementById("plan-toggle")!;
 const planPanel = document.getElementById("plan-panel")!;
+const unitsToggle = document.getElementById("units-toggle") as HTMLButtonElement;
+const unitsPanel = document.getElementById("units-panel") as HTMLElement;
+const unitsStatusEl = document.getElementById("units-status") as HTMLElement;
+const missionUnitsListEl = document.getElementById("mission-units-list") as HTMLElement;
 const planStatus = document.getElementById("plan-status")!;
 const markListEl = document.getElementById("plan-mark-list")!;
 
@@ -196,6 +201,12 @@ function togglePlanMode() {
 planToggle.addEventListener("click", (e) => {
   e.stopPropagation();
   togglePlanMode();
+});
+
+unitsToggle.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setUnitsPanelOpen(!isUnitsPanelOpen());
+  layoutUtilityToggles();
 });
 
 document.addEventListener("keydown", (e) => {
@@ -508,6 +519,26 @@ interface MissionMarkerRender {
   color: string;
 }
 
+interface MissionUnitRender {
+  unit: MissionUnitDef;
+  worldX: number;
+  worldZ: number;
+}
+
+interface ResolvedMissionUnit {
+  unit: MissionUnitDef;
+  unitIndex: number;
+  replayUnitId: number | null;
+  replayPlayerName: string;
+  groupLabel: string;
+}
+
+interface MissionReplayLink {
+  replayUnitId: number;
+  playerName: string;
+  replayGroup: string;
+}
+
 interface ReplayUnitBreakdown {
   killed: Map<number, number>;
   otherKills: Map<number, number>;
@@ -545,6 +576,7 @@ let selectedReplayRow: ReplayListItem | null = null;
 let missionDetails: MissionDetails | null = null;
 let missionIsLoading = false;
 let missionMarkersRender: MissionMarkerRender[] = [];
+let missionUnitsRender: MissionUnitRender[] = [];
 
 const replayRuntimeStates = new Map<number, RuntimeUnitState>();
 const replayVisuals = new Map<number, RuntimeUnitVisual>();
@@ -621,7 +653,9 @@ const replayFilterMedical = document.getElementById("replay-filter-medical") as 
 const replayLabelLayer = document.getElementById("replay-label-layer") as HTMLElement;
 let replayBoardTab: ReplayBoardTab = localStorage.getItem("replay_board_tab") === "events" ? "events" : "kills";
 const REPLAY_BOARDS_PANEL_GAP_PX = 8;
-const PLAN_TOGGLE_GAP_PX = 8;
+const UTILITY_TOGGLE_GAP_PX = 8;
+const UTILITY_TOGGLE_BETWEEN_PX = 6;
+const UTILITY_PANEL_GAP_PX = 6;
 
 replayProxyInput.value = localStorage.getItem("replay_proxy_url") || DEPLOY_REPLAY_PROXY_URL;
 replaySpeedSelect.value = localStorage.getItem("replay_speed") || "1";
@@ -642,6 +676,19 @@ function setMissionManualPanelOpen(open: boolean) {
 setMissionManualPanelOpen(localStorage.getItem("mission_manual_panel_open") === "1");
 replayBoardsPanel.open = localStorage.getItem("replay_boards_open") !== "0";
 
+function isUnitsPanelOpen(): boolean {
+  return unitsPanel.style.display === "block";
+}
+
+function setUnitsPanelOpen(open: boolean) {
+  unitsPanel.style.display = open ? "block" : "none";
+  unitsToggle.classList.toggle("active", open);
+  localStorage.setItem("mission_units_panel_open", open ? "1" : "0");
+  renderMissionOverlay();
+}
+
+setUnitsPanelOpen(localStorage.getItem("mission_units_panel_open") === "1");
+
 function layoutReplayBoardsPanel() {
   const rect = uiShellEl.getBoundingClientRect();
   const top = Math.max(10, Math.round(rect.bottom + REPLAY_BOARDS_PANEL_GAP_PX));
@@ -652,21 +699,42 @@ function layoutReplayBoardsPanel() {
   replayBoardsPanel.style.maxHeight = `${Math.max(120, window.innerHeight - top - 10)}px`;
 }
 
-function layoutPlanToggle() {
+function layoutUnitsPanel() {
+  const top = Math.round(unitsToggle.getBoundingClientRect().bottom + UTILITY_PANEL_GAP_PX);
+  const maxHeight = Math.max(120, window.innerHeight - top - 10);
+  const panelWidth = unitsPanel.offsetWidth || 360;
+  const maxLeft = Math.max(10, window.innerWidth - panelWidth - 10);
+  const left = Math.max(10, Math.min(maxLeft, Math.round(unitsToggle.getBoundingClientRect().left)));
+  unitsPanel.style.top = `${top}px`;
+  unitsPanel.style.left = `${left}px`;
+  unitsPanel.style.maxHeight = `${maxHeight}px`;
+}
+
+function layoutUtilityToggles() {
   const rect = uiShellEl.getBoundingClientRect();
   const top = Math.max(10, Math.round(rect.top));
-  const targetLeft = Math.round(rect.right + PLAN_TOGGLE_GAP_PX);
+  const targetLeft = Math.round(rect.right + UTILITY_TOGGLE_GAP_PX);
   const maxLeft = window.innerWidth - planToggle.clientWidth - 10;
-  const left = Math.max(10, Math.min(maxLeft, targetLeft));
+  const planLeft = Math.max(10, Math.min(maxLeft, targetLeft));
   planToggle.style.top = `${top}px`;
-  planToggle.style.left = `${left}px`;
+  planToggle.style.left = `${planLeft}px`;
+
+  let unitsTop = top;
+  let unitsLeft = planLeft + planToggle.clientWidth + UTILITY_TOGGLE_BETWEEN_PX;
+  if (unitsLeft + unitsToggle.clientWidth > window.innerWidth - 10) {
+    unitsLeft = planLeft;
+    unitsTop = top + planToggle.clientHeight + UTILITY_TOGGLE_BETWEEN_PX;
+  }
+  unitsToggle.style.top = `${unitsTop}px`;
+  unitsToggle.style.left = `${unitsLeft}px`;
+  layoutUnitsPanel();
 }
 
 layoutReplayBoardsPanel();
-layoutPlanToggle();
+layoutUtilityToggles();
 new MutationObserver(() => {
   layoutReplayBoardsPanel();
-  layoutPlanToggle();
+  layoutUtilityToggles();
 }).observe(uiShellEl, { attributes: true, attributeFilter: ["open"], subtree: true });
 
 function setReplayBoardTab(tab: ReplayBoardTab) {
@@ -1019,6 +1087,7 @@ function disposeGroupChildren(group: THREE.Group) {
 
 function clearMissionOverlay() {
   missionMarkersRender = [];
+  missionUnitsRender = [];
   disposeGroupChildren(missionGroup);
 }
 
@@ -1029,6 +1098,298 @@ function missionMapMatchesCurrentMap(): boolean {
   if (!currentToken) return false;
   if (!missionToken) return true;
   return missionToken === currentToken || missionToken.includes(currentToken) || currentToken.includes(missionToken);
+}
+
+function normalizeMissionUnitToken(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9а-яё]+/gi, "");
+}
+
+function missionUnitLabel(unit: MissionUnitDef): string {
+  const slot = unit.slot.trim();
+  if (slot) return slot;
+  const fallback = unit.type.trim();
+  if (fallback) return fallback;
+  return `#${unit.id}`;
+}
+
+function missionUnitGroupLabel(unit: MissionUnitDef): string {
+  const group = unit.group.trim();
+  if (group) return group;
+  const sideLabel = unitSideCss(unit.side);
+  return sideLabel === "unknown" ? "Без группы" : sideLabel.toUpperCase();
+}
+
+function isSideOnlyGroupLabel(label: string): boolean {
+  const normalized = normalizeMissionUnitToken(label);
+  return normalized === "west" || normalized === "east" || normalized === "guer" || normalized === "civ";
+}
+
+function isNumericMissionGroupLabel(label: string): boolean {
+  return /^\d{1,2}(?:-\d{1,2})+$/.test(label.trim());
+}
+
+function parseSlotHierarchy(label: string): { groupLabel: string } | null {
+  const match = label.match(/(?:^|[^0-9])(\d{1,2})\s*[-_/.]\s*(\d{1,2})(?:\s*[-_/.]\s*(\d{1,2}))?/);
+  if (!match) return null;
+  const first = Number(match[1]);
+  const second = Number(match[2]);
+  if (!Number.isFinite(first) || !Number.isFinite(second)) return null;
+  const groupLabel = `${first}-${second}`;
+  return {
+    groupLabel,
+  };
+}
+
+function resolveMissionUnitReplayLinks(units: MissionUnitDef[]): Array<MissionReplayLink | null> {
+  const result: Array<MissionReplayLink | null> = Array(units.length).fill(null);
+  if (!replayData || replayData.units.length === 0) return result;
+
+  const takenReplayIds = new Set<number>();
+  const byGroupSlot = new Map<string, number[]>();
+  const bySlot = new Map<string, number[]>();
+  const byUnitName = new Map<string, number[]>();
+
+  for (const unit of replayData.units) {
+    if (unit.kind !== "unit") continue;
+    const slotToken = normalizeMissionUnitToken(unit.slot || "");
+    const groupToken = normalizeMissionUnitToken(unit.group || "");
+    const nameToken = normalizeMissionUnitToken(unit.name || "");
+    if (slotToken) {
+      const existing = bySlot.get(slotToken) || [];
+      existing.push(unit.id);
+      bySlot.set(slotToken, existing);
+    }
+    if (slotToken && groupToken) {
+      const key = `${groupToken}|${slotToken}`;
+      const existing = byGroupSlot.get(key) || [];
+      existing.push(unit.id);
+      byGroupSlot.set(key, existing);
+    }
+    if (nameToken) {
+      const existing = byUnitName.get(nameToken) || [];
+      existing.push(unit.id);
+      byUnitName.set(nameToken, existing);
+    }
+  }
+
+  for (let index = 0; index < units.length; index++) {
+    const missionUnit = units[index];
+    const groupToken = normalizeMissionUnitToken(missionUnit.group);
+    const slotToken = normalizeMissionUnitToken(missionUnit.slot);
+    const labelToken = normalizeMissionUnitToken(missionUnitLabel(missionUnit));
+
+    const candidateIds: number[] = [];
+    if (groupToken && slotToken) {
+      candidateIds.push(...(byGroupSlot.get(`${groupToken}|${slotToken}`) || []));
+    }
+    if (candidateIds.length === 0 && slotToken) {
+      candidateIds.push(...(bySlot.get(slotToken) || []));
+    }
+    if (candidateIds.length === 0 && labelToken) {
+      candidateIds.push(...(bySlot.get(labelToken) || []));
+      candidateIds.push(...(byUnitName.get(labelToken) || []));
+    }
+
+    const unique = Array.from(new Set(candidateIds)).filter((id) => !takenReplayIds.has(id));
+    const sideFiltered = unique.filter((id) => {
+      const replayUnit = replayUnitsById.get(id);
+      if (!replayUnit) return false;
+      if (missionUnit.side === 4) return true;
+      return replayUnit.side === missionUnit.side;
+    });
+    if (sideFiltered.length !== 1) continue;
+    const replayUnit = replayUnitsById.get(sideFiltered[0]);
+    if (!replayUnit) continue;
+    result[index] = {
+      replayUnitId: replayUnit.id,
+      playerName: replayUnit.playerName.trim(),
+      replayGroup: replayUnit.group.trim(),
+    };
+    takenReplayIds.add(replayUnit.id);
+  }
+
+  for (const side of [0, 1, 2, 3, 4]) {
+    const missionSideIndices = units
+      .map((unit, index) => (unit.side === side && !result[index] ? index : -1))
+      .filter((index) => index >= 0);
+    const replaySideIds = replayData.units
+      .filter((unit) => unit.kind === "unit" && unit.side === side && !takenReplayIds.has(unit.id))
+      .map((unit) => unit.id);
+    if (missionSideIndices.length === 0 || replaySideIds.length === 0) continue;
+
+    const minCount = Math.min(missionSideIndices.length, replaySideIds.length);
+    if (minCount < 4) continue;
+
+    let slotExactMatches = 0;
+    for (let i = 0; i < minCount; i++) {
+      const missionIndex = missionSideIndices[i];
+      const replayUnit = replayUnitsById.get(replaySideIds[i]);
+      if (!replayUnit) continue;
+      const missionToken = normalizeMissionUnitToken(missionUnitLabel(units[missionIndex]));
+      const replayToken = normalizeMissionUnitToken(replayUnit.slot || replayUnit.name || "");
+      if (missionToken && replayToken && missionToken === replayToken) {
+        slotExactMatches++;
+      }
+    }
+
+    const exactRatio = slotExactMatches / minCount;
+    if (exactRatio < 0.7) continue;
+
+    for (let i = 0; i < minCount; i++) {
+      const missionIndex = missionSideIndices[i];
+      if (result[missionIndex]) continue;
+      const replayUnit = replayUnitsById.get(replaySideIds[i]);
+      if (!replayUnit || takenReplayIds.has(replayUnit.id)) continue;
+      result[missionIndex] = {
+        replayUnitId: replayUnit.id,
+        playerName: replayUnit.playerName.trim(),
+        replayGroup: replayUnit.group.trim(),
+      };
+      takenReplayIds.add(replayUnit.id);
+    }
+  }
+
+  return result;
+}
+
+function resolveMissionUnitGroupLabel(
+  unit: MissionUnitDef,
+  linked: MissionReplayLink | null
+): { groupLabel: string } {
+  const slotHierarchy = parseSlotHierarchy(missionUnitLabel(unit));
+  const missionGroup = missionUnitGroupLabel(unit);
+  const replayGroup = linked?.replayGroup?.trim() || "";
+  if (missionGroup && !isSideOnlyGroupLabel(missionGroup)) {
+    return {
+      groupLabel:
+        isNumericMissionGroupLabel(missionGroup) && replayGroup && !isSideOnlyGroupLabel(replayGroup)
+          ? replayGroup
+          : missionGroup,
+    };
+  }
+
+  if (slotHierarchy) {
+    return {
+      groupLabel: slotHierarchy.groupLabel,
+    };
+  }
+
+  if (replayGroup && !isSideOnlyGroupLabel(replayGroup)) {
+    return {
+      groupLabel: replayGroup,
+    };
+  }
+
+  return {
+    groupLabel: missionGroup,
+  };
+}
+
+function renderMissionUnitsPanel() {
+  missionUnitsListEl.innerHTML = "";
+  if (!missionDetails || missionDetails.units.length === 0) {
+    unitsStatusEl.textContent = "Нет данных юнитов в mission.sqm.";
+    return;
+  }
+
+  const links = resolveMissionUnitReplayLinks(missionDetails.units);
+  const aliasVotes = new Map<string, Map<string, number>>();
+  for (let index = 0; index < missionDetails.units.length; index++) {
+    const unit = missionDetails.units[index];
+    const missionGroup = missionUnitGroupLabel(unit);
+    if (!isNumericMissionGroupLabel(missionGroup)) continue;
+    const replayGroup = links[index]?.replayGroup?.trim() || "";
+    if (!replayGroup || isSideOnlyGroupLabel(replayGroup)) continue;
+    const votes = aliasVotes.get(missionGroup) || new Map<string, number>();
+    votes.set(replayGroup, (votes.get(replayGroup) || 0) + 1);
+    aliasVotes.set(missionGroup, votes);
+  }
+  const numericGroupAlias = new Map<string, string>();
+  for (const [missionGroup, votes] of aliasVotes.entries()) {
+    let winnerLabel = "";
+    let winnerVotes = -1;
+    for (const [label, count] of votes.entries()) {
+      if (count > winnerVotes) {
+        winnerLabel = label;
+        winnerVotes = count;
+      }
+    }
+    if (winnerLabel) numericGroupAlias.set(missionGroup, winnerLabel);
+  }
+
+  const groups = new Map<
+    string,
+    {
+      label: string;
+      side: number;
+      rows: ResolvedMissionUnit[];
+    }
+  >();
+  for (let index = 0; index < missionDetails.units.length; index++) {
+    const unit = missionDetails.units[index];
+    const linked = links[index];
+    const grouping = resolveMissionUnitGroupLabel(unit, linked);
+    const missionGroup = missionUnitGroupLabel(unit);
+    const alias = numericGroupAlias.get(missionGroup);
+    const groupLabel = alias && isNumericMissionGroupLabel(missionGroup) ? alias : grouping.groupLabel;
+    const row: ResolvedMissionUnit = {
+      unit,
+      unitIndex: index,
+      replayUnitId: linked?.replayUnitId ?? null,
+      replayPlayerName: linked?.playerName ?? "",
+      groupLabel,
+    };
+    const groupKey = `${unit.side}|${groupLabel}`;
+    const bucket = groups.get(groupKey) || {
+      label: groupLabel,
+      side: unit.side,
+      rows: [],
+    };
+    bucket.rows.push(row);
+    groups.set(groupKey, bucket);
+  }
+  const orderedGroups = Array.from(groups.values());
+
+  const hasReplaySync = links.some((entry) => (entry?.playerName || "").length > 0);
+  unitsStatusEl.textContent = hasReplaySync
+    ? `Юнитов: ${missionDetails.units.length}. Привязка к реплею активна.`
+    : `Юнитов: ${missionDetails.units.length}. Клик: перейти к спавну/игроку.`;
+
+  for (const group of orderedGroups) {
+    const groupEl = document.createElement("div");
+    groupEl.className = "units-group";
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "units-group-title";
+    titleEl.textContent = `${group.label} (${group.rows.length})`;
+    groupEl.appendChild(titleEl);
+
+    for (const row of group.rows) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `units-row unit-side-${unitSideCss(row.unit.side)}`;
+      button.dataset.missionUnitIndex = String(row.unitIndex);
+      if (row.replayUnitId !== null) {
+        button.dataset.replayUnitId = String(row.replayUnitId);
+      }
+
+      const slotEl = document.createElement("span");
+      slotEl.className = "units-row-label";
+      slotEl.textContent = missionUnitLabel(row.unit);
+      button.appendChild(slotEl);
+
+      if (row.replayPlayerName) {
+        const playerEl = document.createElement("span");
+        playerEl.className = "units-row-player";
+        playerEl.textContent = row.replayPlayerName;
+        button.appendChild(playerEl);
+      }
+
+      groupEl.appendChild(button);
+    }
+
+    missionUnitsListEl.appendChild(groupEl);
+  }
 }
 
 function missionMarkerOpacity(marker: MissionMarkerDef): number {
@@ -1078,6 +1439,7 @@ function buildMissionMarkerPoints(marker: MissionMarkerDef, worldX: number, worl
 
 function renderMissionOverlay() {
   clearMissionOverlay();
+  renderMissionUnitsPanel();
   if (!missionDetails || !currentMapName) return;
   if (!missionMapMatchesCurrentMap()) {
     setMissionStatus(
@@ -1137,14 +1499,45 @@ function renderMissionOverlay() {
     missionGroup.add(mesh);
   }
 
+  if (isUnitsPanelOpen() && missionDetails.units.length > 0) {
+    const count = missionDetails.units.length;
+    const geometry = new THREE.ConeGeometry(1.8, 4.4, 3);
+    const material = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      vertexColors: true,
+    });
+    const mesh = new THREE.InstancedMesh(geometry, material, count);
+    const tmp = new THREE.Object3D();
+    const tint = new THREE.Color();
+    for (let i = 0; i < count; i++) {
+      const unit = missionDetails.units[i];
+      const worldX = mapXToWorldX(unit.x);
+      const worldZ = unit.z;
+      const terrainY = sampleTerrainHeight(worldX, worldZ);
+      tmp.position.set(worldX, terrainY + 2.5, worldZ);
+      tmp.rotation.set(0, 0, 0);
+      tmp.updateMatrix();
+      mesh.setMatrixAt(i, tmp.matrix);
+      tint.setHex(sideColor(unit.side));
+      mesh.setColorAt(i, tint);
+      missionUnitsRender.push({ unit, worldX, worldZ });
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    missionGroup.add(mesh);
+  }
+
   const objectRendered = missionShowObjectsInput.checked ? renderedObjectsCount : 0;
   const markerRendered = missionShowMarkersInput.checked ? missionDetails.markers.length : 0;
+  const unitRendered = isUnitsPanelOpen() ? missionUnitsRender.length : 0;
   const objectExtra =
     missionShowObjectsInput.checked && missionDetails.objects.length > renderedObjectsCount
       ? ` (показано ${renderedObjectsCount} из ${missionDetails.objects.length})`
       : "";
   setMissionStatus(
-    `Детали миссии: маркеры ${markerRendered}, объекты ${objectRendered}${objectExtra}. Файл: ${missionDetails.missionFile} (${replaySourceLabel(missionDetails.source)}).`
+    `Детали миссии: маркеры ${markerRendered}, объекты ${objectRendered}, юниты ${unitRendered}${objectExtra}. Файл: ${missionDetails.missionFile} (${replaySourceLabel(missionDetails.source)}).`
   );
 }
 
@@ -1583,6 +1976,41 @@ function moveCameraToReplayUnit(unitId: number) {
     REPLAY_FOLLOW_MAX_PITCH
   );
   applyFollowCameraToTarget(targetX, targetY, targetZ);
+}
+
+function moveCameraToWorldPoint(worldX: number, worldZ: number) {
+  const terrainY = sampleTerrainHeight(worldX, worldZ);
+  const minAltitude = terrainY + 120;
+  const nextY = Math.max(camera.position.y, minAltitude);
+  camera.position.set(worldX, nextY, worldZ);
+  camera.lookAt(worldX, terrainY + 2, worldZ);
+}
+
+function focusMissionUnit(missionUnitIndex: number, replayUnitId: number | null) {
+  if (!missionDetails) return;
+  const missionUnit = missionDetails.units[missionUnitIndex];
+  if (!missionUnit) return;
+
+  if (replayUnitId !== null && replayData) {
+    const hasState = resolveReplayWorldPosition(replayUnitId, replayCurrentTimeSec);
+    if (hasState) {
+      moveCameraToReplayUnit(replayUnitId);
+      const replayUnit = replayUnitsById.get(replayUnitId);
+      const name = replayUnit?.playerName || replayUnit?.name || `#${replayUnitId}`;
+      setReplayStatus(`Переход к игроку: ${name}`);
+      return;
+    }
+  }
+
+  if (!currentMapName) {
+    setMissionStatus("Сначала загрузите карту, чтобы перейти к позиции юнита.");
+    return;
+  }
+
+  const worldX = mapXToWorldX(missionUnit.x);
+  const worldZ = missionUnit.z;
+  moveCameraToWorldPoint(worldX, worldZ);
+  setMissionStatus(`Переход к стартовой позиции: ${missionUnitLabel(missionUnit)} (${missionUnitGroupLabel(missionUnit)}).`);
 }
 
 function updateFollowCamera(): boolean {
@@ -2068,7 +2496,7 @@ function updateReplayMeta() {
   }
   const missionExtra =
     missionDetails && missionDetails.replayName === replayData.replayName
-      ? `Детали миссии: ${missionDetails.markers.length} маркеров, ${missionDetails.objects.length} объектов`
+      ? `Детали миссии: ${missionDetails.markers.length} маркеров, ${missionDetails.objects.length} объектов, ${missionDetails.units.length} юнитов`
       : "Детали миссии: не загружены";
   replayMetaEl.textContent = [
     `Реплей: ${replayData.replayName}`,
@@ -2170,6 +2598,7 @@ function loadSelectedReplay() {
   missionDetails = null;
   setMissionLoading(false);
   clearMissionOverlay();
+  renderMissionUnitsPanel();
   setMissionStatus("Детали миссии не загружены.");
   btnLoadMission.disabled = true;
   setReplayStatus(`Загрузка реплея ${selected.row.name}...`);
@@ -2297,6 +2726,7 @@ replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
     updateUrlReplayParams(replayData.replayName, replayData.archive);
     setReplayStatus(`Реплей разобран (${replaySourceLabel(replayData.source)}). Подбираю карту...`);
     setMissionStatus("Опционально: нажмите «Загрузить детали миссии», чтобы добавить маркеры и объекты.");
+    renderMissionUnitsPanel();
     attemptMapAutoloadForReplay();
     maybeAutoLoadMissionFromUrl();
     return;
@@ -2620,6 +3050,17 @@ missionShowObjectsInput.addEventListener("change", () => {
   updateReplayMeta();
 });
 
+missionUnitsListEl.addEventListener("click", (event) => {
+  const target = event.target as HTMLElement;
+  const row = target.closest<HTMLButtonElement>(".units-row");
+  if (!row) return;
+  const missionUnitIndex = Number(row.dataset.missionUnitIndex || -1);
+  if (!Number.isFinite(missionUnitIndex) || missionUnitIndex < 0) return;
+  const replayUnitIdRaw = Number(row.dataset.replayUnitId || 0);
+  const replayUnitId = Number.isFinite(replayUnitIdRaw) && replayUnitIdRaw > 0 ? replayUnitIdRaw : null;
+  focusMissionUnit(missionUnitIndex, replayUnitId);
+});
+
 replayBoardKillsBtn.addEventListener("click", () => {
   setReplayBoardTab("kills");
 });
@@ -2809,6 +3250,22 @@ function updateMinimap() {
     }
   }
 
+  if (missionUnitsRender.length > 0) {
+    for (const item of missionUnitsRender) {
+      const px = (item.worldX / currentMapSize) * size;
+      const py = (1 - item.worldZ / currentMapSize) * size;
+      minimapCtx.beginPath();
+      minimapCtx.moveTo(px, py - 3.2);
+      minimapCtx.lineTo(px + 2.8, py + 2.6);
+      minimapCtx.lineTo(px - 2.8, py + 2.6);
+      minimapCtx.closePath();
+      minimapCtx.fillStyle = `#${sideColor(item.unit.side).toString(16).padStart(6, "0")}`;
+      minimapCtx.globalAlpha = 0.9;
+      minimapCtx.fill();
+      minimapCtx.globalAlpha = 1;
+    }
+  }
+
   if (replayReady) {
     for (const line of replayLines) {
       const sx = (line.fromX / currentMapSize) * size;
@@ -2857,6 +3314,9 @@ minimapCanvas.addEventListener("mousedown", (e) => {
 planPanel.addEventListener("mousedown", (e) => {
   e.stopPropagation();
 });
+unitsPanel.addEventListener("mousedown", (e) => {
+  e.stopPropagation();
+});
 replayPanel.addEventListener("mousedown", (e) => {
   e.stopPropagation();
 });
@@ -2868,6 +3328,9 @@ replayBoardsPanel.addEventListener("toggle", () => {
   layoutReplayBoardsPanel();
 });
 planToggle.addEventListener("mousedown", (e) => {
+  e.stopPropagation();
+});
+unitsToggle.addEventListener("mousedown", (e) => {
   e.stopPropagation();
 });
 
@@ -2940,7 +3403,7 @@ window.addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   layoutReplayBoardsPanel();
-  layoutPlanToggle();
+  layoutUtilityToggles();
 });
 
 setStatus("Для начала выберите папку с картами (или отдельные файлы). Можно выбрать корневую папку игры.");
