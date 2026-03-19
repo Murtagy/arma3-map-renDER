@@ -206,6 +206,97 @@
       }
       #plan-toggle:hover { background: #5a7a9b; }
       #plan-toggle.active { background: #a33; }
+      #units-toggle {
+        position: absolute;
+        top: 10px;
+        left: 80px;
+        z-index: 101;
+        padding: 6px 10px;
+        background: #2c5c47;
+        color: #eee;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-family: monospace;
+        font-size: 12px;
+      }
+      #units-toggle:hover { background: #3c7a61; }
+      #units-toggle.active { background: #2f8f67; }
+      #units-panel {
+        position: absolute;
+        top: 10px;
+        left: 730px;
+        z-index: 100;
+        background: rgba(0,0,0,0.85);
+        padding: 12px;
+        border-radius: 6px;
+        font-size: 12px;
+        width: min(360px, calc(100vw - 20px));
+        display: none;
+        border: 1px solid rgba(127, 219, 202, 0.45);
+        max-height: calc(100vh - 20px);
+        overflow: auto;
+      }
+      #units-panel h2 { font-size: 14px; margin-bottom: 8px; color: #7fdbca; }
+      #units-status {
+        color: #93a6ac;
+        margin-bottom: 6px;
+        font-size: 11px;
+      }
+      #mission-units-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .units-group {
+        border: 1px solid rgba(127, 219, 202, 0.2);
+        border-radius: 4px;
+        background: rgba(255,255,255,0.02);
+        padding: 5px;
+      }
+      .units-group-title {
+        color: #7fdbca;
+        font-size: 12px;
+        margin-bottom: 4px;
+      }
+      .units-row {
+        width: 100%;
+        text-align: left;
+        background: rgba(255,255,255,0.06);
+        color: #d7dfe6;
+        border: none;
+        border-radius: 3px;
+        margin: 0 0 3px;
+        padding: 4px 6px;
+        cursor: pointer;
+        font-family: monospace;
+        font-size: 11px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .units-row:hover {
+        background: rgba(127, 219, 202, 0.18);
+      }
+      .units-row:last-child {
+        margin-bottom: 0;
+      }
+      .units-row-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .units-row-player {
+        color: #a9d7ff;
+        font-size: 10px;
+        white-space: nowrap;
+      }
+      .units-row.unit-side-west { border-left: 3px solid #3a8fff; }
+      .units-row.unit-side-east { border-left: 3px solid #ff4a4a; }
+      .units-row.unit-side-guer { border-left: 3px solid #45d36f; }
+      .units-row.unit-side-civ { border-left: 3px solid #d08cff; }
+      .units-row.unit-side-unknown { border-left: 3px solid #9da3aa; }
       .row { display: flex; gap: 4px; flex-wrap: wrap; }
       #map-select {
         width: 100%;
@@ -522,7 +613,7 @@
         font-size: 11px;
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-CTPQEDtw.js"></script>
+    <script type="module" crossorigin src="/assets/index-BdsiALjU.js"></script>
   </head>
   <body>
     <details id="ui-shell" open>
@@ -600,6 +691,7 @@
     </details>
 
     <button id="plan-toggle" title="Режим планирования (P)">План</button>
+    <button id="units-toggle" title="Состав миссии">Юниты</button>
     <div id="plan-panel">
       <h2>Планирование</h2>
       <div class="plan-status" id="plan-status">Двойной клик по земле - поставить метку</div>
@@ -618,6 +710,11 @@
         <input type="text" id="mark-text" placeholder="Название метки (например, Alpha)" />
       </div>
       <div id="plan-mark-list"></div>
+    </div>
+    <div id="units-panel">
+      <h2>Юниты миссии</h2>
+      <div id="units-status">Нет данных миссии.</div>
+      <div id="mission-units-list"></div>
     </div>
 
     <div id="hud"></div>

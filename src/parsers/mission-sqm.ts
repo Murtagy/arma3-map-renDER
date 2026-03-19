@@ -1,9 +1,10 @@
-import type { MissionMarkerDef, MissionObjectDef } from "../workers/types";
+import type { MissionMarkerDef, MissionObjectDef, MissionUnitDef } from "../workers/types";
 
 export interface MissionSqmData {
   sourceName: string;
   markers: MissionMarkerDef[];
   objects: MissionObjectDef[];
+  units: MissionUnitDef[];
 }
 
 interface ClassCtx {
@@ -13,6 +14,7 @@ interface ClassCtx {
 
 interface EntityCtx {
   depth: number;
+  parentEntity: EntityCtx | null;
   layer: string;
   id: number;
   dataType: string;
@@ -26,6 +28,14 @@ interface EntityCtx {
   b: number;
   angleDeg: number;
   drawBorder: boolean;
+  sideName: string;
+  slotName: string;
+  callsign: string;
+  roleDescription: string;
+  playerName: string;
+  isPlayable: boolean;
+  isPlayer: boolean;
+  groupNameHint: string;
   position: [number, number, number] | null;
   angles: [number, number, number] | null;
 }
@@ -63,6 +73,83 @@ function findNearestLayerName(entityStack: EntityCtx[]): string {
   return "";
 }
 
+function findNearestParentEntity(entityStack: EntityCtx[], currentDepth: number): EntityCtx | null {
+  for (let i = entityStack.length - 1; i >= 0; i--) {
+    if (entityStack[i].depth < currentDepth) {
+      return entityStack[i];
+    }
+  }
+  return null;
+}
+
+function firstNonEmpty(...values: string[]): string {
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return "";
+}
+
+function sideNameToIndex(sideName: string): number {
+  const normalized = sideName.trim().toLowerCase();
+  if (!normalized) return 4;
+  if (normalized === "west" || normalized === "blufor" || normalized === "blu_f") return 0;
+  if (normalized === "east" || normalized === "opfor" || normalized === "opf_f") return 1;
+  if (normalized === "guer" || normalized === "independent" || normalized === "resistance" || normalized === "ind_f")
+    return 2;
+  if (normalized === "civ" || normalized === "civilian") return 3;
+  if (normalized === "empty") return 4;
+  return 4;
+}
+
+function isMissionUnitEntity(entity: EntityCtx): boolean {
+  if (entity.dataType !== "Object") return false;
+  if (!entity.position) return false;
+  if (!entity.type || entity.type.toLowerCase().startsWith("land_")) return false;
+
+  if (entity.isPlayable || entity.isPlayer) return true;
+
+  const parentIsGroup = entity.parentEntity?.dataType === "Group";
+  if (parentIsGroup) return true;
+
+  const sideKnown = sideNameToIndex(entity.sideName) !== 4;
+  if (!sideKnown) return false;
+  if (entity.groupNameHint.trim()) return true;
+  if (entity.slotName.trim() || entity.roleDescription.trim()) return true;
+  return false;
+}
+
+function sideIndexToKey(side: number): string {
+  if (side === 0) return "west";
+  if (side === 1) return "east";
+  if (side === 2) return "guer";
+  if (side === 3) return "civ";
+  return "unknown";
+}
+
+function resolveEntityGroupName(
+  entity: EntityCtx,
+  syntheticGroupByEntity: Map<EntityCtx, string>,
+  sideGroupCounters: Map<string, number>
+): string {
+  const parent = entity.parentEntity;
+  if (parent && parent.dataType === "Group") {
+    const parentName = firstNonEmpty(parent.slotName, parent.callsign, parent.name, parent.groupNameHint);
+    if (parentName) return parentName;
+
+    const cached = syntheticGroupByEntity.get(parent);
+    if (cached) return cached;
+    const sideIdx = sideNameToIndex(parent.sideName || entity.sideName);
+    const sideKey = sideIndexToKey(sideIdx);
+    const next = (sideGroupCounters.get(sideKey) || 0) + 1;
+    sideGroupCounters.set(sideKey, next);
+    const synthetic = `1-${next}`;
+    syntheticGroupByEntity.set(parent, synthetic);
+    return synthetic;
+  }
+  return firstNonEmpty(entity.groupNameHint);
+}
+
 function parseClassName(line: string): string | null {
   const match = line.match(/^class\s+([A-Za-z0-9_#]+)/);
   return match?.[1] ?? null;
@@ -71,6 +158,9 @@ function parseClassName(line: string): string | null {
 export function parseMissionSqm(text: string): MissionSqmData {
   const markers: MissionMarkerDef[] = [];
   const objects: MissionObjectDef[] = [];
+  const units: MissionUnitDef[] = [];
+  const syntheticGroupByEntity = new Map<EntityCtx, string>();
+  const sideGroupCounters = new Map<string, number>();
   const classStack: ClassCtx[] = [];
   const entityStack: EntityCtx[] = [];
 
@@ -112,6 +202,29 @@ export function parseMissionSqm(text: string): MissionSqmData {
         z: entity.position[2],
         angleDeg: (yaw * 180) / Math.PI,
       });
+
+      if (isMissionUnitEntity(entity)) {
+        const group = resolveEntityGroupName(entity, syntheticGroupByEntity, sideGroupCounters);
+        const slot = firstNonEmpty(
+          entity.slotName,
+          entity.roleDescription,
+          entity.callsign,
+          entity.playerName,
+          entity.name,
+          entity.type,
+          `#${entity.id || units.length + 1}`
+        );
+        units.push({
+          id: entity.id || units.length + 1,
+          group,
+          slot,
+          side: sideNameToIndex(entity.sideName),
+          x: entity.position[0],
+          y: entity.position[1],
+          z: entity.position[2],
+          type: entity.type,
+        });
+      }
     }
   };
 
@@ -121,8 +234,10 @@ export function parseMissionSqm(text: string): MissionSqmData {
     classStack.push({ name: className, inMission });
 
     if (inMission && parent?.name === "Entities" && /^Item\d+$/.test(className)) {
+      const currentDepth = classStack.length;
       entityStack.push({
-        depth: classStack.length,
+        depth: currentDepth,
+        parentEntity: findNearestParentEntity(entityStack, currentDepth),
         layer: findNearestLayerName(entityStack),
         id: 0,
         dataType: "",
@@ -136,6 +251,14 @@ export function parseMissionSqm(text: string): MissionSqmData {
         b: 0,
         angleDeg: 0,
         drawBorder: false,
+        sideName: "",
+        slotName: "",
+        callsign: "",
+        roleDescription: "",
+        playerName: "",
+        isPlayable: false,
+        isPlayer: false,
+        groupNameHint: "",
         position: null,
         angles: null,
       });
@@ -205,6 +328,7 @@ export function parseMissionSqm(text: string): MissionSqmData {
     const currentClass = classStack[classDepth - 1];
     const atEntityLevel = classDepth === entity.depth;
     const inPositionInfo = currentClass?.name === "PositionInfo" && classDepth === entity.depth + 1;
+    const keyLower = key.toLowerCase();
 
     if (inPositionInfo && hasArraySuffix && key === "position") {
       const arr = parseSqmNumberArray(valueRaw);
@@ -216,6 +340,41 @@ export function parseMissionSqm(text: string): MissionSqmData {
       const arr = parseSqmNumberArray(valueRaw);
       if (arr.length >= 3) entity.angles = [arr[0], arr[1], arr[2]];
       continue;
+    }
+
+    if (!hasArraySuffix) {
+      if (keyLower === "side") {
+        entity.sideName = parseSqmString(valueRaw);
+      } else if (keyLower === "name") {
+        const value = parseSqmString(valueRaw);
+        if (entity.dataType === "Group" && value && !entity.groupNameHint) {
+          entity.groupNameHint = value;
+        }
+        if (entity.dataType === "Object" && value && !entity.slotName) {
+          entity.slotName = value;
+        }
+      } else if (keyLower === "isplayable") {
+        entity.isPlayable = parseSqmNumber(valueRaw, 0) > 0.5;
+      } else if (keyLower === "isplayer") {
+        entity.isPlayer = parseSqmNumber(valueRaw, 0) > 0.5;
+      } else if (keyLower === "callsign") {
+        const value = parseSqmString(valueRaw);
+        if (value && !entity.callsign) entity.callsign = value;
+      } else if (keyLower === "description" || keyLower === "slot" || keyLower === "rolename") {
+        const value = parseSqmString(valueRaw);
+        if (value && !entity.roleDescription) entity.roleDescription = value;
+      } else if (keyLower === "text") {
+        const value = parseSqmString(valueRaw);
+        if (value && !entity.slotName) entity.slotName = value;
+      } else if (keyLower === "player") {
+        const value = parseSqmString(valueRaw);
+        if (value && value.toUpperCase() !== "PLAYER COMMANDER" && value.toUpperCase() !== "PLAYER" && !entity.playerName) {
+          entity.playerName = value;
+        }
+      } else if (keyLower === "groupid") {
+        const value = parseSqmString(valueRaw);
+        if (value && !entity.groupNameHint) entity.groupNameHint = value;
+      }
     }
 
     if (!atEntityLevel) continue;
@@ -234,6 +393,12 @@ export function parseMissionSqm(text: string): MissionSqmData {
       entity.name = parseSqmString(valueRaw);
       if (entity.dataType === "Layer") {
         entity.layer = entity.name;
+      }
+      if (entity.dataType === "Object" && !entity.slotName) {
+        entity.slotName = entity.name;
+      }
+      if (entity.dataType === "Group" && !entity.groupNameHint) {
+        entity.groupNameHint = entity.name;
       }
       continue;
     }
@@ -283,5 +448,6 @@ export function parseMissionSqm(text: string): MissionSqmData {
     sourceName,
     markers,
     objects,
+    units,
   };
 }

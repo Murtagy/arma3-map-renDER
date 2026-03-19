@@ -596,6 +596,7 @@ async function handleLoadMissionDetails(
         source,
         markers: parsed.markers,
         objects: parsed.objects,
+        units: parsed.units,
       };
       post({
         type: "mission_details_loaded",
@@ -659,6 +660,7 @@ async function handleLoadMissionUrl(
     source,
     markers: parsed.markers,
     objects: parsed.objects,
+    units: parsed.units,
   };
   post({
     type: "mission_details_loaded",

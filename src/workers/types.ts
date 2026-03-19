@@ -143,6 +143,17 @@ export interface MissionObjectDef {
   angleDeg: number;
 }
 
+export interface MissionUnitDef {
+  id: number;
+  group: string;
+  slot: string;
+  side: number;
+  x: number;
+  y: number;
+  z: number;
+  type: string;
+}
+
 export interface MissionDetails {
   replayName: string;
   mapKey: string;
@@ -153,6 +164,7 @@ export interface MissionDetails {
   source: "direct" | "proxy";
   markers: MissionMarkerDef[];
   objects: MissionObjectDef[];
+  units: MissionUnitDef[];
 }
 
 export type ReplayUnitKind = "unit" | "vehicle";
