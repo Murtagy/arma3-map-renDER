@@ -226,9 +226,10 @@ let currentObjects: THREE.Group | null = null;
 let currentMapName: string | null = null;
 let isLoading = false;
 
-const pendingAutoMap = new URLSearchParams(window.location.search).get("map")?.toLowerCase() ?? null;
-const legacyPboParam = new URLSearchParams(window.location.search).get("pbo");
-const legacyWrpParam = new URLSearchParams(window.location.search).get("wrp");
+const initialSearchParams = new URLSearchParams(window.location.search);
+const pendingAutoMap = initialSearchParams.get("map")?.toLowerCase() ?? null;
+const legacyPboParam = initialSearchParams.get("pbo");
+const legacyWrpParam = initialSearchParams.get("wrp");
 
 if (legacyPboParam || legacyWrpParam) {
   setStatus("Старые ссылки ?pbo= и ?wrp= не поддерживаются в статическом режиме. Используйте ?map=<name> и выберите папку.");
@@ -574,8 +575,10 @@ const SIDE_COLORS: Record<number, number> = {
 };
 const REPLAY_SPEED_MULTIPLIER = 2;
 
-const pendingAutoReplay = new URLSearchParams(window.location.search).get("replay");
-const pendingAutoReplayArchive = new URLSearchParams(window.location.search).get("archive");
+const pendingAutoReplay = initialSearchParams.get("replay");
+const pendingAutoReplayArchive = initialSearchParams.get("archive");
+const pendingAutoMissionUrl = initialSearchParams.get("mission")?.trim() || "";
+let pendingAutoMissionLoad = pendingAutoMissionUrl;
 const DEPLOY_REPLAY_PROXY_URL =
   typeof (import.meta as { env?: Record<string, unknown> }).env?.VITE_REPLAY_PROXY_URL === "string"
     ? String((import.meta as { env?: Record<string, unknown> }).env?.VITE_REPLAY_PROXY_URL).trim()
@@ -625,7 +628,7 @@ replaySpeedSelect.value = localStorage.getItem("replay_speed") || "1";
 replayShowDeadInput.checked = localStorage.getItem("replay_show_dead") === "1";
 missionShowMarkersInput.checked = localStorage.getItem("mission_show_markers") !== "0";
 missionShowObjectsInput.checked = localStorage.getItem("mission_show_objects") !== "0";
-missionUrlInput.value = localStorage.getItem("mission_manual_url") || "";
+missionUrlInput.value = pendingAutoMissionUrl || localStorage.getItem("mission_manual_url") || "";
 btnLoadMission.disabled = true;
 if (replayProxyInput.value.trim()) {
   replayProxyRow.style.display = "none";
@@ -697,6 +700,17 @@ function updateUrlReplayParams(replayName: string, archive?: number) {
     url.searchParams.set("archive", String(archive));
   } else {
     url.searchParams.delete("archive");
+  }
+  history.replaceState(null, "", url);
+}
+
+function updateUrlMissionParam(missionUrl?: string) {
+  const url = new URL(window.location.href);
+  const value = missionUrl?.trim() || "";
+  if (value) {
+    url.searchParams.set("mission", value);
+  } else {
+    url.searchParams.delete("mission");
   }
   history.replaceState(null, "", url);
 }
@@ -2190,6 +2204,7 @@ function loadMissionFromUrl() {
     return;
   }
   localStorage.setItem("mission_manual_url", missionUrl);
+  updateUrlMissionParam(missionUrl);
   setMissionLoading(true);
   setMissionStatus("Загрузка mission.pbo по ссылке...");
   replayWorker.postMessage({
@@ -2200,6 +2215,17 @@ function loadMissionFromUrl() {
     mapKey: replayData?.header.mapKey || selectedReplayRow?.mapKey,
     proxyUrl: getReplayProxyUrl(),
   });
+}
+
+function maybeAutoLoadMissionFromUrl() {
+  if (!pendingAutoMissionLoad || missionIsLoading || replayIsLoading) return;
+  const missionUrl = pendingAutoMissionLoad;
+  pendingAutoMissionLoad = "";
+  missionUrlInput.value = missionUrl;
+  localStorage.setItem("mission_manual_url", missionUrl);
+  setMissionManualPanelOpen(true);
+  localStorage.setItem("mission_manual_panel_open", "1");
+  loadMissionFromUrl();
 }
 
 replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
@@ -2221,6 +2247,7 @@ replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
       replayReady = false;
       btnLoadMission.disabled = !replayData;
       setReplayStatus(`Ошибка: ${msg.message}`);
+      maybeAutoLoadMissionFromUrl();
     }
     return;
   }
@@ -2248,6 +2275,7 @@ replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
         loadSelectedReplay();
       }
     }
+    maybeAutoLoadMissionFromUrl();
     return;
   }
   if (msg.type === "replay_parsed") {
@@ -2270,6 +2298,7 @@ replayWorker.onmessage = (event: MessageEvent<ReplayWorkerResponse>) => {
     setReplayStatus(`Реплей разобран (${replaySourceLabel(replayData.source)}). Подбираю карту...`);
     setMissionStatus("Опционально: нажмите «Загрузить детали миссии», чтобы добавить маркеры и объекты.");
     attemptMapAutoloadForReplay();
+    maybeAutoLoadMissionFromUrl();
     return;
   }
   if (msg.type === "mission_details_loaded") {
@@ -2573,6 +2602,7 @@ missionUrlInput.addEventListener("input", () => {
   const value = missionUrlInput.value.trim();
   if (!value) {
     localStorage.removeItem("mission_manual_url");
+    updateUrlMissionParam("");
     return;
   }
   localStorage.setItem("mission_manual_url", value);
@@ -2921,4 +2951,6 @@ setReplayStatus(
 );
 if (pendingAutoReplay) {
   loadReplayList();
+} else {
+  maybeAutoLoadMissionFromUrl();
 }
