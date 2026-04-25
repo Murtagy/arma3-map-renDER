@@ -4,6 +4,7 @@ import { createTerrain, createWater, applySatelliteTexture, type TerrainData } f
 import { createObjects } from "./objects";
 import { mapDirDegToWorldYawRad, mapToWorldX, worldToMapX } from "./map-coords";
 import { PlanMode, type MarkColor } from "./plan-mode";
+import { parsePboBuffer } from "./parsers/pbo";
 import type {
   MapWorkerResponse,
   WorkerMapLoadedMessage,
@@ -327,9 +328,69 @@ async function ensureMapFolderPermission(handle: any, requestPrompt: boolean): P
 }
 
 type MapFolderEntry = { file: File; relativePath: string };
+const MAP_SCAN_HEADER_READ_STEPS = [512 * 1024, 2 * 1024 * 1024, 8 * 1024 * 1024, 32 * 1024 * 1024];
 
 function normalizeName(name: string): string {
   return name.trim().toLowerCase();
+}
+
+function isMapContainerExtension(name: string): boolean {
+  return /\.(pbo|wrp)$/i.test(name);
+}
+
+function isBoundsError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const message = err.message.toLowerCase();
+  return message.includes("out of bounds") || message.includes("outside the bounds");
+}
+
+function pboEntriesContainWrp(entries: Array<{ filename: string }>): boolean {
+  return entries.some((entry) => entry.filename.toLowerCase().endsWith(".wrp"));
+}
+
+async function pboFileContainsWrp(file: File): Promise<boolean> {
+  for (const readBytes of MAP_SCAN_HEADER_READ_STEPS) {
+    const bytesToRead = Math.min(file.size, readBytes);
+    if (bytesToRead <= 0) return false;
+    try {
+      const chunk = new Uint8Array(await file.slice(0, bytesToRead).arrayBuffer());
+      const parsed = parsePboBuffer(chunk);
+      return pboEntriesContainWrp(parsed.entries);
+    } catch (err: unknown) {
+      if (!isBoundsError(err) || bytesToRead >= file.size) {
+        return false;
+      }
+    }
+  }
+
+  try {
+    const full = new Uint8Array(await file.arrayBuffer());
+    const parsed = parsePboBuffer(full);
+    return pboEntriesContainWrp(parsed.entries);
+  } catch {
+    return false;
+  }
+}
+
+async function filterTerrainEntries(entries: MapFolderEntry[]): Promise<MapFolderEntry[]> {
+  const candidates = entries.filter((entry) => isMapContainerExtension(entry.file.name));
+  const filtered: MapFolderEntry[] = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const entry = candidates[i];
+    if (i % 20 === 0 || i === candidates.length - 1) {
+      setStatus(`Проверяю файлы карт: ${i + 1}/${candidates.length}...`);
+    }
+    const fileName = entry.file.name.toLowerCase();
+    if (fileName.endsWith(".wrp")) {
+      filtered.push(entry);
+      continue;
+    }
+    if (!fileName.endsWith(".pbo")) continue;
+    if (await pboFileContainsWrp(entry.file)) {
+      filtered.push(entry);
+    }
+  }
+  return filtered;
 }
 
 async function listDirectoryEntries(
@@ -2781,9 +2842,9 @@ loaderWorker.onmessage = (event: MessageEvent<MapWorkerResponse>) => {
   }
 };
 
-function setMapEntries(entries: Array<{ file: File; relativePath: string }>) {
-  mapFiles = entries
-    .filter((entry) => /\.(pbo|wrp)$/i.test(entry.file.name))
+async function setMapEntries(entries: Array<{ file: File; relativePath: string }>) {
+  const terrainEntries = await filterTerrainEntries(entries);
+  mapFiles = terrainEntries
     .map((entry, index) => ({
       id: `${index}:${entry.relativePath}`,
       mapName: extractMapName(entry.file.name),
@@ -2800,7 +2861,7 @@ function setMapEntries(entries: Array<{ file: File; relativePath: string }>) {
     mapSelect.innerHTML = '<option value="">-- карты не найдены --</option>';
     mapSelect.disabled = true;
     btnLoadMap.disabled = true;
-    setStatus("В выбранных файлах нет .pbo/.wrp.");
+    setStatus("В выбранной папке не найдено PBO/WRP с данными карты (WRP).");
     return;
   }
 
@@ -2837,12 +2898,12 @@ function setMapEntries(entries: Array<{ file: File; relativePath: string }>) {
   }
 }
 
-function setMaps(files: File[]) {
+async function setMaps(files: File[]) {
   const entries = files.map((file) => ({
     file,
     relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
   }));
-  setMapEntries(entries);
+  await setMapEntries(entries);
 }
 
 function updateReopenFolderButton(button: HTMLButtonElement) {
@@ -2869,9 +2930,9 @@ async function openStoredMapFolder(requestPrompt: boolean) {
     return;
   }
 
-  setStatus("Сканирую папку в поиске файлов .pbo/.wrp...");
+  setStatus("Сканирую папку в поиске файлов карт...");
   const entries = await collectMapEntriesFromDirectory(handle);
-  setMapEntries(entries);
+  await setMapEntries(entries);
 }
 
 async function pickFolderWithPersistentAccess() {
@@ -2889,9 +2950,9 @@ async function pickFolderWithPersistentAccess() {
     } catch {
       hasStoredMapFolderHandle = false;
     }
-    setStatus("Сканирую папку в поиске файлов .pbo/.wrp...");
+    setStatus("Сканирую папку в поиске файлов карт...");
     const entries = await collectMapEntriesFromDirectory(handle);
-    setMapEntries(entries);
+    await setMapEntries(entries);
     return true;
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === "AbortError") {
@@ -2958,12 +3019,12 @@ btnPickFiles.addEventListener("click", () => {
 
 folderInput.addEventListener("change", () => {
   const files = Array.from(folderInput.files || []);
-  setMaps(files);
+  void setMaps(files);
 });
 
 filesInput.addEventListener("change", () => {
   const files = Array.from(filesInput.files || []);
-  setMaps(files);
+  void setMaps(files);
 });
 
 void (async () => {
@@ -2980,7 +3041,7 @@ void (async () => {
     }
     setStatus("Восстанавливаю карты из ранее выбранной папки...");
     const entries = await collectMapEntriesFromDirectory(stored);
-    setMapEntries(entries);
+    await setMapEntries(entries);
   } catch (err: unknown) {
     setStatus(`Не удалось восстановить прошлую папку: ${err instanceof Error ? err.message : String(err)}`);
   }
