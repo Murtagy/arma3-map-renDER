@@ -255,6 +255,7 @@ interface MapFileEntry {
 }
 
 let mapFiles: MapFileEntry[] = [];
+let lastMapScanWarnings: string[] = [];
 let currentTerrainInfo: {
   elevations: Float32Array;
   gridWidth: number;
@@ -328,6 +329,16 @@ async function ensureMapFolderPermission(handle: any, requestPrompt: boolean): P
 }
 
 type MapFolderEntry = { file: File; relativePath: string };
+type DirectoryListingEntry = { name: string; entry: any };
+type MapScanState = {
+  visitedDirectoryHandles: any[];
+  warnings: string[];
+  warningSet: Set<string>;
+};
+type MapScanResult = {
+  entries: MapFolderEntry[];
+  warnings: string[];
+};
 const MAP_SCAN_HEADER_READ_STEPS = [512 * 1024, 2 * 1024 * 1024, 8 * 1024 * 1024, 32 * 1024 * 1024];
 
 function normalizeName(name: string): string {
@@ -393,12 +404,77 @@ async function filterTerrainEntries(entries: MapFolderEntry[]): Promise<MapFolde
   return filtered;
 }
 
+function createMapScanState(): MapScanState {
+  return {
+    visitedDirectoryHandles: [],
+    warnings: [],
+    warningSet: new Set<string>(),
+  };
+}
+
+function describeScanError(err: unknown): string {
+  if (err instanceof DOMException) {
+    return `${err.name}: ${err.message}`;
+  }
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
+}
+
+function pushScanWarning(scanState: MapScanState, path: string, err: unknown) {
+  const cleanPath = path.trim() || ".";
+  const warning = `${cleanPath} (${describeScanError(err)})`;
+  if (scanState.warningSet.has(warning)) return;
+  scanState.warningSet.add(warning);
+  scanState.warnings.push(warning);
+}
+
+async function hasVisitedDirectoryHandle(scanState: MapScanState, handle: any): Promise<boolean> {
+  for (const knownHandle of scanState.visitedDirectoryHandles) {
+    if (knownHandle === handle) return true;
+    const isSameEntry = knownHandle?.isSameEntry;
+    if (typeof isSameEntry !== "function") continue;
+    try {
+      if (await isSameEntry.call(knownHandle, handle)) return true;
+    } catch {
+      // Ignore handle comparison errors and continue best-effort cycle detection.
+    }
+  }
+  return false;
+}
+
+async function markDirectoryVisited(scanState: MapScanState, handle: any): Promise<boolean> {
+  if (await hasVisitedDirectoryHandle(scanState, handle)) return false;
+  scanState.visitedDirectoryHandles.push(handle);
+  return true;
+}
+
+async function getEntryFile(
+  entryHandle: any,
+  filePath: string,
+  scanState: MapScanState
+): Promise<File | null> {
+  try {
+    return await entryHandle.getFile();
+  } catch (err: unknown) {
+    pushScanWarning(scanState, filePath, err);
+    return null;
+  }
+}
+
 async function listDirectoryEntries(
-  dirHandle: any
-): Promise<Array<{ name: string; entry: any }>> {
-  const items: Array<{ name: string; entry: any }> = [];
-  for await (const [name, entry] of dirHandle.entries()) {
-    items.push({ name, entry });
+  dirHandle: any,
+  pathLabel: string,
+  scanState: MapScanState
+): Promise<DirectoryListingEntry[]> {
+  const items: DirectoryListingEntry[] = [];
+  try {
+    for await (const [name, entry] of dirHandle.entries()) {
+      items.push({ name, entry });
+    }
+  } catch (err: unknown) {
+    pushScanWarning(scanState, pathLabel, err);
   }
   return items;
 }
@@ -406,22 +482,29 @@ async function listDirectoryEntries(
 async function collectMapEntriesRecursively(
   dirHandle: any,
   pathPrefix = "",
-  maxDepth = 48
+  maxDepth = 48,
+  scanState = createMapScanState()
 ): Promise<MapFolderEntry[]> {
   if (maxDepth < 0) return [];
+  const entered = await markDirectoryVisited(scanState, dirHandle);
+  if (!entered) return [];
+
   const found: MapFolderEntry[] = [];
-  for await (const [name, entry] of dirHandle.entries()) {
+  const currentPath = pathPrefix || String(dirHandle?.name || "");
+  const dirEntries = await listDirectoryEntries(dirHandle, currentPath || ".", scanState);
+  for (const { name, entry } of dirEntries) {
     const relPath = pathPrefix ? `${pathPrefix}/${name}` : name;
     if (entry.kind === "directory") {
       if (maxDepth === 0) continue;
-      const nested = await collectMapEntriesRecursively(entry, relPath, maxDepth - 1);
+      const nested = await collectMapEntriesRecursively(entry, relPath, maxDepth - 1, scanState);
       found.push(...nested);
       continue;
     }
     if (entry.kind !== "file" || !/\.(pbo|wrp)$/i.test(name)) {
       continue;
     }
-    const file = await entry.getFile();
+    const file = await getEntryFile(entry, relPath, scanState);
+    if (!file) continue;
     found.push({ file, relativePath: relPath });
   }
   return found;
@@ -429,14 +512,21 @@ async function collectMapEntriesRecursively(
 
 async function collectMapEntriesFromAddonsDirectory(
   addonsHandle: any,
-  addonsPath: string
+  addonsPath: string,
+  scanState: MapScanState
 ): Promise<MapFolderEntry[]> {
-  // Addons folders are where map pbos live; keep recursion shallow to avoid unrelated trees.
-  return collectMapEntriesRecursively(addonsHandle, addonsPath, 4);
+  // Addons folders are where map pbos live; keep recursion shallow and support linked dirs.
+  return collectMapEntriesRecursively(addonsHandle, addonsPath, 4, scanState);
 }
 
-async function collectMapEntriesFromSelectedFolder(rootHandle: any): Promise<MapFolderEntry[]> {
-  const rootEntries = await listDirectoryEntries(rootHandle);
+async function collectMapEntriesFromSelectedFolder(rootHandle: any): Promise<MapScanResult> {
+  const scanState = createMapScanState();
+  await markDirectoryVisited(scanState, rootHandle);
+  const rootEntries = await listDirectoryEntries(
+    rootHandle,
+    String(rootHandle?.name || "."),
+    scanState
+  );
   const rootName = normalizeName(String(rootHandle?.name || ""));
   const addonsScanTargets: Array<{ handle: any; path: string }> = [];
   const directMapFiles: MapFolderEntry[] = [];
@@ -447,7 +537,8 @@ async function collectMapEntriesFromSelectedFolder(rootHandle: any): Promise<Map
 
   for (const item of rootEntries) {
     if (item.entry.kind === "file" && /\.(pbo|wrp)$/i.test(item.name)) {
-      const file = await item.entry.getFile();
+      const file = await getEntryFile(item.entry, item.name, scanState);
+      if (!file) continue;
       directMapFiles.push({ file, relativePath: item.name });
       continue;
     }
@@ -459,35 +550,12 @@ async function collectMapEntriesFromSelectedFolder(rootHandle: any): Promise<Map
       continue;
     }
 
-    if (lower === "expansion") {
-      const expEntries = await listDirectoryEntries(item.entry);
-      const expAddons = expEntries.find((e) => e.entry.kind === "directory" && normalizeName(e.name) === "addons");
-      if (expAddons) {
-        addonsScanTargets.push({
-          handle: expAddons.entry,
-          path: `${item.name}/${expAddons.name}`,
-        });
-      }
-      continue;
-    }
-
-    if (item.name.startsWith("@")) {
-      const modEntries = await listDirectoryEntries(item.entry);
-      const modAddons = modEntries.find((e) => e.entry.kind === "directory" && normalizeName(e.name) === "addons");
-      if (modAddons) {
-        addonsScanTargets.push({
-          handle: modAddons.entry,
-          path: `${item.name}/${modAddons.name}`,
-        });
-      }
-      continue;
-    }
-
     if (lower === "!workshop") {
-      const workshopMods = await listDirectoryEntries(item.entry);
+      const workshopMods = await listDirectoryEntries(item.entry, item.name, scanState);
       for (const mod of workshopMods) {
         if (mod.entry.kind !== "directory") continue;
-        const modEntries = await listDirectoryEntries(mod.entry);
+        const modPath = `${item.name}/${mod.name}`;
+        const modEntries = await listDirectoryEntries(mod.entry, modPath, scanState);
         const modAddons = modEntries.find((e) => e.entry.kind === "directory" && normalizeName(e.name) === "addons");
         if (!modAddons) continue;
         addonsScanTargets.push({
@@ -495,18 +563,36 @@ async function collectMapEntriesFromSelectedFolder(rootHandle: any): Promise<Map
           path: `${item.name}/${mod.name}/${modAddons.name}`,
         });
       }
+      continue;
+    }
+
+    const dirEntries = await listDirectoryEntries(item.entry, item.name, scanState);
+    const nestedAddons = dirEntries.find((e) => e.entry.kind === "directory" && normalizeName(e.name) === "addons");
+    if (nestedAddons) {
+      addonsScanTargets.push({
+        handle: nestedAddons.entry,
+        path: `${item.name}/${nestedAddons.name}`,
+      });
+    }
+
+    for (const child of dirEntries) {
+      if (child.entry.kind !== "file" || !/\.(pbo|wrp)$/i.test(child.name)) continue;
+      const filePath = `${item.name}/${child.name}`;
+      const file = await getEntryFile(child.entry, filePath, scanState);
+      if (!file) continue;
+      directMapFiles.push({ file, relativePath: filePath });
     }
   }
 
   const found = [...directMapFiles];
   if (addonsScanTargets.length > 0) {
     for (const target of addonsScanTargets) {
-      const entries = await collectMapEntriesFromAddonsDirectory(target.handle, target.path);
+      const entries = await collectMapEntriesFromAddonsDirectory(target.handle, target.path, scanState);
       found.push(...entries);
     }
   } else {
     // Non-standard folder layout: fallback to recursive scan for compatibility.
-    const recursive = await collectMapEntriesRecursively(rootHandle, "", 48);
+    const recursive = await collectMapEntriesRecursively(rootHandle, "", 48, scanState);
     found.push(...recursive);
   }
 
@@ -516,17 +602,27 @@ async function collectMapEntriesFromSelectedFolder(rootHandle: any): Promise<Map
       dedup.set(item.relativePath, item);
     }
   }
-  return Array.from(dedup.values());
+  return { entries: Array.from(dedup.values()), warnings: scanState.warnings };
 }
 
 async function collectMapEntriesFromDirectory(
   dirHandle: any,
   pathPrefix = ""
-): Promise<Array<{ file: File; relativePath: string }>> {
+): Promise<MapScanResult> {
+  const scanState = createMapScanState();
   if (pathPrefix) {
-    return collectMapEntriesRecursively(dirHandle, pathPrefix, 48);
+    const entries = await collectMapEntriesRecursively(dirHandle, pathPrefix, 48, scanState);
+    return { entries, warnings: scanState.warnings };
   }
   return collectMapEntriesFromSelectedFolder(dirHandle);
+}
+
+function formatMapScanStatus(base: string): string {
+  if (lastMapScanWarnings.length === 0) return base;
+  const firstWarning = lastMapScanWarnings[0];
+  const extraCount = Math.max(0, lastMapScanWarnings.length - 1);
+  const extraSuffix = extraCount > 0 ? ` и ещё ${extraCount}` : "";
+  return `${base}\nНекоторые ссылки/папки пропущены (${lastMapScanWarnings.length}): ${firstWarning}${extraSuffix}.`;
 }
 
 // --- Replay State ---
@@ -2861,7 +2957,7 @@ async function setMapEntries(entries: Array<{ file: File; relativePath: string }
     mapSelect.innerHTML = '<option value="">-- карты не найдены --</option>';
     mapSelect.disabled = true;
     btnLoadMap.disabled = true;
-    setStatus("В выбранной папке не найдено PBO/WRP с данными карты (WRP).");
+    setStatus(formatMapScanStatus("В выбранной папке не найдено PBO/WRP с данными карты (WRP)."));
     return;
   }
 
@@ -2885,12 +2981,14 @@ async function setMapEntries(entries: Array<{ file: File; relativePath: string }
       void loadMapFile(matched.file, matched.relativePath);
       autoMapTriggered = true;
     } else {
-      setStatus(`Найдено карт: ${mapFiles.length}. Цель автозагрузки "${autoTarget}" не найдена.`);
+      setStatus(
+        formatMapScanStatus(`Найдено карт: ${mapFiles.length}. Цель автозагрузки "${autoTarget}" не найдена.`)
+      );
     }
   }
 
   if (!autoMapTriggered && (!replayData || !replayPendingStart)) {
-    setStatus(`Найдено карт: ${mapFiles.length}. Выберите карту и нажмите "Загрузить карту".`);
+    setStatus(formatMapScanStatus(`Найдено карт: ${mapFiles.length}. Выберите карту и нажмите "Загрузить карту".`));
   }
 
   if (replayData && replayPendingStart) {
@@ -2899,6 +2997,7 @@ async function setMapEntries(entries: Array<{ file: File; relativePath: string }
 }
 
 async function setMaps(files: File[]) {
+  lastMapScanWarnings = [];
   const entries = files.map((file) => ({
     file,
     relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
@@ -2931,8 +3030,9 @@ async function openStoredMapFolder(requestPrompt: boolean) {
   }
 
   setStatus("Сканирую папку в поиске файлов карт...");
-  const entries = await collectMapEntriesFromDirectory(handle);
-  await setMapEntries(entries);
+  const scanResult = await collectMapEntriesFromDirectory(handle);
+  lastMapScanWarnings = scanResult.warnings;
+  await setMapEntries(scanResult.entries);
 }
 
 async function pickFolderWithPersistentAccess() {
@@ -2951,8 +3051,9 @@ async function pickFolderWithPersistentAccess() {
       hasStoredMapFolderHandle = false;
     }
     setStatus("Сканирую папку в поиске файлов карт...");
-    const entries = await collectMapEntriesFromDirectory(handle);
-    await setMapEntries(entries);
+    const scanResult = await collectMapEntriesFromDirectory(handle);
+    lastMapScanWarnings = scanResult.warnings;
+    await setMapEntries(scanResult.entries);
     return true;
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === "AbortError") {
@@ -3040,8 +3141,9 @@ void (async () => {
       return;
     }
     setStatus("Восстанавливаю карты из ранее выбранной папки...");
-    const entries = await collectMapEntriesFromDirectory(stored);
-    await setMapEntries(entries);
+    const scanResult = await collectMapEntriesFromDirectory(stored);
+    lastMapScanWarnings = scanResult.warnings;
+    await setMapEntries(scanResult.entries);
   } catch (err: unknown) {
     setStatus(`Не удалось восстановить прошлую папку: ${err instanceof Error ? err.message : String(err)}`);
   }
