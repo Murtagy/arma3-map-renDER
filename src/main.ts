@@ -584,16 +584,15 @@ async function collectMapEntriesFromSelectedFolder(rootHandle: any): Promise<Map
   }
 
   const found = [...directMapFiles];
-  if (addonsScanTargets.length > 0) {
-    for (const target of addonsScanTargets) {
-      const entries = await collectMapEntriesFromAddonsDirectory(target.handle, target.path, scanState);
-      found.push(...entries);
-    }
-  } else {
-    // Non-standard folder layout: fallback to recursive scan for compatibility.
-    const recursive = await collectMapEntriesRecursively(rootHandle, "", 48, scanState);
-    found.push(...recursive);
+  for (const target of addonsScanTargets) {
+    const entries = await collectMapEntriesFromAddonsDirectory(target.handle, target.path, scanState);
+    found.push(...entries);
   }
+
+  // Run a compatibility sweep as well. This catches link-based/non-standard layouts
+  // while visited-handle tracking prevents infinite loops and redundant deep rescans.
+  const recursive = await collectMapEntriesRecursively(rootHandle, "", 48, scanState);
+  found.push(...recursive);
 
   const dedup = new Map<string, MapFolderEntry>();
   for (const item of found) {
