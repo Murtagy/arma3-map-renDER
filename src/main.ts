@@ -521,7 +521,6 @@ async function collectMapEntriesFromAddonsDirectory(
 
 async function collectMapEntriesFromSelectedFolder(rootHandle: any): Promise<MapScanResult> {
   const scanState = createMapScanState();
-  await markDirectoryVisited(scanState, rootHandle);
   const rootEntries = await listDirectoryEntries(
     rootHandle,
     String(rootHandle?.name || "."),
