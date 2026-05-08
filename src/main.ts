@@ -4,6 +4,7 @@ import { createTerrain, createWater, applySatelliteTexture, type TerrainData } f
 import { createObjects } from "./objects";
 import { mapDirDegToWorldYawRad, mapToWorldX, worldToMapX } from "./map-coords";
 import { PlanMode, type MarkColor } from "./plan-mode";
+import { APP_CONFIG, normalizeReplayCorsProxyUrl, REPLAY_CORS_PROXY_URL } from "./config";
 import { parsePboBuffer } from "./parsers/pbo";
 import type {
   MapWorkerResponse,
@@ -37,6 +38,8 @@ const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerH
 camera.position.set(0, 500, 0);
 
 const flyCamera = new FlyCamera(camera, renderer.domElement);
+(window as any).__APP_CONFIG = APP_CONFIG;
+console.info("App config:", APP_CONFIG);
 
 const ambientLight = new THREE.AmbientLight(0x606080, 1.5);
 scene.add(ambientLight);
@@ -766,10 +769,7 @@ const pendingAutoReplay = initialSearchParams.get("replay");
 const pendingAutoReplayArchive = initialSearchParams.get("archive");
 const pendingAutoMissionUrl = initialSearchParams.get("mission")?.trim() || "";
 let pendingAutoMissionLoad = pendingAutoMissionUrl;
-const DEPLOY_REPLAY_PROXY_URL =
-  typeof (import.meta as { env?: Record<string, unknown> }).env?.VITE_REPLAY_PROXY_URL === "string"
-    ? String((import.meta as { env?: Record<string, unknown> }).env?.VITE_REPLAY_PROXY_URL).trim()
-    : "";
+const DEPLOY_REPLAY_PROXY_URL = REPLAY_CORS_PROXY_URL.trim();
 
 const replayProxyInput = document.getElementById("replay-proxy") as HTMLInputElement;
 const replayProxyRow = document.getElementById("replay-proxy-row") as HTMLElement;
@@ -812,7 +812,13 @@ const UTILITY_TOGGLE_GAP_PX = 8;
 const UTILITY_TOGGLE_BETWEEN_PX = 6;
 const UTILITY_PANEL_GAP_PX = 6;
 
-replayProxyInput.value = localStorage.getItem("replay_proxy_url") || DEPLOY_REPLAY_PROXY_URL;
+const storedReplayProxyUrl = normalizeReplayCorsProxyUrl(localStorage.getItem("replay_proxy_url"));
+if (storedReplayProxyUrl) {
+  localStorage.setItem("replay_proxy_url", storedReplayProxyUrl);
+} else {
+  localStorage.removeItem("replay_proxy_url");
+}
+replayProxyInput.value = storedReplayProxyUrl || DEPLOY_REPLAY_PROXY_URL;
 replaySpeedSelect.value = localStorage.getItem("replay_speed") || "1";
 replayShowDeadInput.checked = localStorage.getItem("replay_show_dead") === "1";
 missionShowMarkersInput.checked = localStorage.getItem("mission_show_markers") !== "0";
@@ -968,11 +974,12 @@ function replayProgressStageLabel(stage: string): string {
 }
 
 function getReplayProxyUrl(): string | undefined {
-  const value = replayProxyInput.value.trim();
+  const value = normalizeReplayCorsProxyUrl(replayProxyInput.value);
   if (!value) {
     localStorage.removeItem("replay_proxy_url");
     return DEPLOY_REPLAY_PROXY_URL || undefined;
   }
+  replayProxyInput.value = value;
   localStorage.setItem("replay_proxy_url", value);
   return value;
 }

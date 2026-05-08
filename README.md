@@ -41,10 +41,21 @@ npm run preview
 If you want replay fetch to work in local `npm run dev`, set:
 
 ```bash
-echo 'VITE_REPLAY_PROXY_URL=https://replay-cors-proxy.<your-subdomain>.workers.dev' > .env.local
+cp .env.example .env.local
+```
+
+Default public value:
+
+```env
+VITE_REPLAY_CORS_PROXY_URL=https://replay-cors-proxy.murtagy.workers.dev
 ```
 
 Then restart `npm run dev` so Vite picks up the new env value.
+
+Notes:
+- This URL is public, not a secret.
+- Browser clients need it, so it must be a Vite public env (`VITE_*`).
+- Users can see this proxy URL in devtools/network anyway.
 
 ## Development Hotpaths
 
@@ -159,21 +170,24 @@ wrangler login
 wrangler deploy
 ```
 
-You will get:
+Default deployed worker URL used by app:
 
 ```text
-https://replay-cors-proxy.<your-subdomain>.workers.dev
+https://replay-cors-proxy.murtagy.workers.dev
 ```
 
-Then set GitHub repo secret:
+Set public repo/deploy variable:
 
-- `Settings -> Secrets and variables -> Actions -> Secrets`
-- add `VITE_REPLAY_PROXY_URL = https://replay-cors-proxy.<your-subdomain>.workers.dev`
+- `VITE_REPLAY_CORS_PROXY_URL = https://replay-cors-proxy.murtagy.workers.dev`
 
-After next deploy, the app uses this proxy by default for everyone.
+Not secret:
+- app reads it in browser
+- users can see it in network tab
+
+After next deploy, app uses this proxy by default for everyone.
 Users do not need to configure anything.
 
-For local dev, use `.env.local` with the same `VITE_REPLAY_PROXY_URL` value.
+For local dev, use `.env.local` with same `VITE_REPLAY_CORS_PROXY_URL` value.
 
 Notes:
 
@@ -188,7 +202,7 @@ Notes:
 Troubleshooting:
 
 - If replay requests still go direct in local dev, stop and restart `npm run dev` after editing `.env.local`.
-- `Proxy URL (override)` input is shown when no default proxy env is configured.
+- `Proxy URL (override)` input is shown only when default proxy config is missing or cleared.
 
 ### Auto-load by URL
 
@@ -223,7 +237,7 @@ Deployment workflow is included at `.github/workflows/deploy-pages.yml`.
 - Push to `main` or `master`
 - GitHub Actions builds and deploys `dist/`
 - Vite `base` is provided by `VITE_BASE_PATH` in the workflow (`/<repo>/`)
-- Optional: set repo secret `VITE_REPLAY_PROXY_URL` to make replay fetching work on Pages with zero user setup
+- Optional: set public repo variable `VITE_REPLAY_CORS_PROXY_URL` to make replay fetching work on Pages with zero user setup
 - In repository settings, set **Pages -> Build and deployment -> Source = GitHub Actions** (not branch root)
 
 ## Controls
