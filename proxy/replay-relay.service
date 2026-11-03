@@ -1,0 +1,38 @@
+[Unit]
+Description=Loopback-only authenticated replay API relay
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=replay-relay
+Group=replay-relay
+RuntimeDirectory=replay-relay
+RuntimeDirectoryMode=0700
+ExecStartPre=/usr/sbin/nginx -t -q -c /etc/replay-relay/nginx.conf
+ExecStart=/usr/sbin/nginx -c /etc/replay-relay/nginx.conf -g 'daemon off;'
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillSignal=SIGQUIT
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+UMask=0077
+MemoryMax=192M
+TasksMax=16
+LimitNOFILE=256
+
+[Install]
+WantedBy=multi-user.target

@@ -2,3 +2,6 @@ name = "replay-cors-proxy"
 main = "proxy/replay-cors-proxy-worker.js"
 compatibility_date = "2026-03-17"
 workers_dev = true
+
+[vars]
+REPLAY_RELAY_URL = "https://replay-relay.murtagy.stream"
