@@ -12,7 +12,7 @@ import type {
   ReplayWorkerResponse,
 } from "./types";
 
-const REPLAY_BASE_URL = "https://replay.tsgames.ru";
+const REPLAY_BASE_URL = "https://replay.tsgames.ru/rv";
 const MISSION_BASE_URL = "https://tsgames.ru/files/missions";
 const DEFAULT_FILTERS = ["1", "2", "3", "4", "10", "20:1"];
 
